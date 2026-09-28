@@ -30,9 +30,10 @@ card the idle line is digitally silent (about −85 dB), and the button has a cl
 - **press**: a sharp click, then your voice
 - **release**: a small click, then the sound cuts to silence within 10 ms, even if you've
   already stopped talking. Pauses in speech fade over 60 ms or more, so they're never
-  mistaken for a release.
+  mistaken for a release. Fast speech can cut off just as dead between words (for 30–170 ms),
+  so a cut-off only counts once the silence has lasted 0.3 s (`--cut-confirm`).
 
-That gives a press in about 15 ms and a release in about 5 ms. The USB card's own
+That gives a press in about 15 ms and a release about 0.3 s after you let go. The USB card's own
 *Auto Gain Control* is switched off at startup (it pumps the floor), and its mic gain is set
 to 22 of 35 (35 clips speech).
 
@@ -125,7 +126,8 @@ parecord --file-format=wav --format=s16le --rate=48000 --channels=1 test.wav   #
 ```
 
 The thresholds are all relative to the measured idle floor: `--margin` (press),
-`--quiet-margin` (what counts as silent), `--cut-margin` (release cut-off), `--hang`
+`--quiet-margin` (what counts as silent), `--cut-margin` (release cut-off), `--cut-confirm`
+(how long a cut-off must stay silent), `--hang`
 (fallback release after silence).
 
 ## Platform support
