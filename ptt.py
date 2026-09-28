@@ -75,6 +75,15 @@ class Detector:
         return None
 
 
+def voiced_clip(hops, loud_db, min_sound):
+    """The held audio minus its trailing silence, or None if it holds under min_sound seconds of sound."""
+    loud = [20 * np.log10((h - h.mean()).std() + 1e-9) > loud_db for h in hops]
+    if sum(loud) * HOP / RATE < min_sound:
+        return None
+    last = len(loud) - 1 - loud[::-1].index(True)
+    return np.concatenate(hops[:last + 1 + int(0.1 * RATE / HOP)])     # keep 100 ms after the last sound
+
+
 def calibrate(read, seconds):
     levels = []
     for _ in range(int(seconds * RATE / HOP)):
@@ -134,7 +143,7 @@ class Transcriber:
 
     def handle(self, clip):
         from scipy.signal import resample_poly
-        if len(clip) < self.a.min_clip * RATE:     # a tap with no speech: Whisper would invent words
+        if clip is None:            # a tap with no speech: Whisper would invent words
             return
         t = time.monotonic()
         audio = resample_poly(clip, 1, 3).astype(np.float32)   # 48 kHz -> 16 kHz
@@ -277,7 +286,8 @@ def main():
                          "driving Claude Code's voice mode (for OpenCode, Codex, ...)")
     ap.add_argument("--whisper-model", default="base.en", help="e.g. tiny.en, base.en, small.en (slower, more accurate)")
     ap.add_argument("--enter", action="store_true", help="--transcribe: press Enter after pasting (send the prompt)")
-    ap.add_argument("--min-clip", type=float, default=0.5, help="--transcribe: ignore clips shorter than this (s)")
+    ap.add_argument("--min-clip", type=float, default=0.5,
+                    help="--transcribe: ignore holds with less than this much sound (s), e.g. taps")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     if not args.file and not args.dry_run:
@@ -390,7 +400,7 @@ def main():
                 send(ev == "press")
                 print(f"{clock()} {ev.upper():7s} {'' if stt else args.key}", flush=True)
                 if ev == "release" and stt:
-                    stt.add(np.concatenate(hops))
+                    stt.add(voiced_clip(hops, floor + args.margin, args.min_clip))
                     hops = []
     except EOFError:
         stop()
