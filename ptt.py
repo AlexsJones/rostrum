@@ -267,7 +267,7 @@ def main():
 
         def read():
             return np.frombuffer(rec.stdout.read(HOP * 2), dtype=np.int16).astype(float) / 32768
-        clock = lambda: time.strftime("%H:%M:%S")
+        clock = lambda: time.strftime("%H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
 
     kb = None
     if not args.dry_run:
