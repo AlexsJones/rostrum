@@ -18,8 +18,10 @@ numpy==2.5.3
 onnxruntime==1.30.0
 packaging==26.3
 protobuf==7.36.2
+pyside6-essentials==6.11.2
 pyyaml==6.0.3
 scipy==1.18.1
+shiboken6==6.11.2
 tokenizers==0.23.2
 tqdm==4.70.1
 typing-extensions==4.16.0
