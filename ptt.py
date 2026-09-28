@@ -350,6 +350,8 @@ def main():
             send(False)
         if not (args.file or args.dry_run) and ttsd:
             ttsd.terminate()
+        if not args.file:
+            rec.terminate()     # else parecord outlives us and writes errors into the (next) log
         sys.exit(0)
 
     signal.signal(signal.SIGINT, stop)
