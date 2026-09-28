@@ -116,6 +116,18 @@ can use it by sending `{"cmd": "say", "text": "..."}` to the Unix socket
 - **"no input matching 'usb-C-Media'"**: the USB sound card isn't plugged in, or it's a
   different card (use `--source`).
 
+## Tests
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+They replay the recorded sessions (`usb_live.wav`, `usb_button.wav`) through `ptt.py` exactly as
+it runs live: where each press and release lands, releasing after you've stopped talking, fast
+speech not counting as a release, silence never pressing, word-for-word transcription, and the
+settings window never cutting off dictation. They run on every push and pull request.
+`ROSTRUM_SKIP_WHISPER=1` skips the transcription test.
+
 ## Tuning for other hardware
 
 Record yourself holding, talking, releasing and tapping, then replay it through the detector:

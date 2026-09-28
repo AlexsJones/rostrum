@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    # the same Fedora the RPM targets (and the bare Ubuntu runner timed out reaching PyPI)
+    container: registry.fedoraproject.org/fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System packages (gcc + headers build evdev; the rest is what Qt needs, as in the RPM)
+        run: |
+          dnf -y -q install uv gcc kernel-headers fontconfig libglvnd-glx mesa-libEGL libxkbcommon \
+            libxkbcommon-x11 libwayland-cursor libwayland-egl libwayland-server dbus-libs >/dev/null
+
+      - name: Python environment
+        run: |
+          uv python install 3.12      # Fedora's uv won't download Python on its own
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python -r requirements.txt
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: whisper-base.en
+
+      - name: Replay the recordings
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: .venv/bin/python -m unittest discover -s tests -v
