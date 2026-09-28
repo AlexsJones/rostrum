@@ -323,7 +323,10 @@ def main():
     signal.signal(signal.SIGTERM, stop)
 
     print(f"calibrating for {args.calibrate}s - keep the button released...", flush=True)
-    floor = calibrate(read, args.calibrate)
+    try:
+        floor = calibrate(read, args.calibrate)
+    except EOFError:
+        sys.exit(f"the recording is shorter than the {args.calibrate}s calibration")
     if floor > -60:
         print(f"warning: the floor measured {floor:.1f} dB - was Transmit held? restart with it released", flush=True)
     if args.transcribe:
