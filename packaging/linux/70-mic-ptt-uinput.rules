@@ -1,0 +1,2 @@
+# Mic PTT presses keys through a virtual keyboard: give the logged-in user access to /dev/uinput.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

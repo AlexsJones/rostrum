@@ -39,7 +39,22 @@ to 22 of 35 (35 clips speech).
 The card also has a HID interface (volume/mute keys); the MicFX button does **not** show up
 there, so detection is from the audio.
 
-## Install (from source, Linux)
+## Install
+
+### Fedora (RPM)
+
+Download `mic-ptt-*.x86_64.rpm` from the [releases](https://github.com/AlexsJones/mic-ptt/releases), then:
+
+```sh
+sudo dnf install ./mic-ptt-*.x86_64.rpm
+```
+
+It installs into `/opt/mic-ptt` with its own Python, adds **Mic PTT** to the app menu, and
+gives the logged-in user access to `/dev/uinput` (no group changes or `setup.sh` needed).
+`mic-ptt-cli` runs the engine without the window. Voice models download on first use
+(Whisper `base.en` ~150 MB, Kokoro ~350 MB).
+
+### From source (Linux)
 
 Needs Python 3.12+, [uv](https://docs.astral.sh/uv/), PipeWire (`pactl`, `parecord`),
 `alsa-utils` (`amixer`) and `wl-clipboard` (`wl-copy`).
@@ -52,8 +67,8 @@ uv pip install --python .venv/bin/python -r requirements.txt
 ./install-desktop.sh    # adds "Mic PTT" to the app menu
 ```
 
-Spoken replies (text-to-speech) come from the separate `claude-tts` project in
-`~/Code/claude-tts` (Kokoro v1.0, run locally). Mic PTT works without it.
+To build the RPM yourself: `podman run --rm -v "$PWD":/src:Z -w /src fedora:44 packaging/rpm/build-rpm.sh`
+(output in `dist/`). Tagging `v*` builds it on GitHub and attaches it to a release.
 
 ## Use
 
@@ -83,10 +98,13 @@ Only one copy runs at a time; starting another stops the first.
 
 ### Text to speech
 
-Kokoro v1.0 (voice *bf_emma*, British English) via `claude-tts`, wired to Claude Code's
-Stop hook so replies are read aloud. Any agent can use it by sending
-`{"cmd": "say", "text": "..."}` to the Unix socket `~/.cache/claude-tts/sock`.
-Mute with the checkbox in the app, or `touch ~/.config/claude-tts/muted`.
+Kokoro v1.0 (voice *bf_emma*, British English), run locally by `tts/ttsd.py`, which
+push-to-talk starts alongside itself. The model downloads to `~/.local/share/mic-ptt/models`
+the first time. **Connect Claude Code** in the app adds a Stop hook to
+`~/.claude/settings.json` so Claude's replies are read aloud (`tts/speak.py`). Any agent
+can use it by sending `{"cmd": "say", "text": "..."}` to the Unix socket
+`~/.cache/claude-tts/sock`. Mute with the checkbox in the app, or
+`touch ~/.config/claude-tts/muted`.
 
 ## Troubleshooting
 

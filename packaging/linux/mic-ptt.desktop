@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Mic PTT
+Comment=Push-to-talk voice input for Claude Code and other apps
+Exec=mic-ptt
+Icon=mic-ptt
+Terminal=false
+Categories=Utility;
+Keywords=voice;microphone;dictation;claude;speech;
+StartupWMClass=mic-ptt
