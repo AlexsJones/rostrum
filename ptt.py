@@ -13,6 +13,7 @@ Natural pauses in speech fade over 60+ ms, so they never look like a release.
   .venv/bin/python ptt.py --file usb_button.wav   # run the detector over a 48 kHz mono recording
   .venv/bin/python ptt.py --key KEY_F13      # hold a different key
   .venv/bin/python ptt.py --no-tts           # mic only: don't load Claude's voice (e.g. for other agents)
+  .venv/bin/python ptt.py --transcribe       # any app (OpenCode, Codex...): local Whisper, pasted on release
 """
 import argparse
 import json
@@ -92,6 +93,60 @@ def setup_mixer(card, gain):
         return
     for ctl, val in (("Auto Gain Control", "off"), ("Mic Capture Volume", str(gain))):
         subprocess.run(["amixer", "-q", "-c", card, "cset", f"name={ctl}", val], check=False)
+
+
+class Transcriber:
+    """Local Whisper: each clip is transcribed in the background and pasted into the focused window."""
+
+    def __init__(self, args, kb):
+        import queue
+        import threading
+        from faster_whisper import WhisperModel
+        print(f"loading Whisper '{args.whisper_model}' (downloaded on first use)...", flush=True)
+        self.model = WhisperModel(args.whisper_model, device="cpu", compute_type="int8",
+                                  cpu_threads=min(8, os.cpu_count() or 1))
+        self.a, self.kb, self.q = args, kb, queue.Queue()
+        threading.Thread(target=self._worker, daemon=True).start()
+
+    def add(self, clip):
+        if self.a.file:             # replaying a recording: transcribe in step, so none are lost at the end
+            self.handle(clip)
+        else:
+            self.q.put(clip)
+
+    def _worker(self):
+        while True:
+            self.handle(self.q.get())
+
+    def handle(self, clip):
+        from scipy.signal import resample_poly
+        if len(clip) < self.a.min_clip * RATE:     # a tap with no speech: Whisper would invent words
+            return
+        t = time.monotonic()
+        audio = resample_poly(clip, 1, 3).astype(np.float32)   # 48 kHz -> 16 kHz
+        segs, _ = self.model.transcribe(audio, language="en", beam_size=1, without_timestamps=True)
+        text = " ".join(s.text.strip() for s in segs).strip()
+        print(f"{time.strftime('%H:%M:%S')} ({time.monotonic() - t:.1f}s) {text!r}", flush=True)
+        if text and self.kb:
+            self.paste(text + " ")
+
+    def paste(self, text):
+        """Clipboard + Ctrl+Shift+V: the terminal paste, which works for any text and keyboard layout."""
+        from evdev import ecodes as e
+        subprocess.run(["wl-copy", "--", text], check=False)
+        time.sleep(0.05)
+        combo = [e.KEY_LEFTCTRL, e.KEY_LEFTSHIFT, e.KEY_V]
+        for k in combo:
+            self.kb.write(e.EV_KEY, k, 1)
+        self.kb.syn()
+        for k in reversed(combo):
+            self.kb.write(e.EV_KEY, k, 0)
+        self.kb.syn()
+        if self.a.enter:
+            time.sleep(0.05)
+            self.kb.write(e.EV_KEY, e.KEY_ENTER, 1)
+            self.kb.write(e.EV_KEY, e.KEY_ENTER, 0)
+            self.kb.syn()
 
 
 def claude_voice_mode():
@@ -177,6 +232,12 @@ def main():
                          "defaults to the mode in ~/.claude/settings.json")
     ap.add_argument("--no-tts", action="store_true",
                     help="don't start the speech service (skips loading Claude's voice model; use with other agents)")
+    ap.add_argument("--transcribe", action="store_true",
+                    help="transcribe locally with Whisper and paste into the focused window, instead of "
+                         "driving Claude Code's voice mode (for OpenCode, Codex, ...)")
+    ap.add_argument("--whisper-model", default="base.en", help="e.g. tiny.en, base.en, small.en (slower, more accurate)")
+    ap.add_argument("--enter", action="store_true", help="--transcribe: press Enter after pasting (send the prompt)")
+    ap.add_argument("--min-clip", type=float, default=0.5, help="--transcribe: ignore clips shorter than this (s)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     if not args.file and not args.dry_run:
@@ -212,8 +273,9 @@ def main():
     if not args.dry_run:
         from evdev import UInput, ecodes
         code = ecodes.ecodes[args.key]
+        keys = [ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_V, ecodes.KEY_ENTER] if args.transcribe else [code]
         try:
-            kb = UInput({ecodes.EV_KEY: [code]}, name="mic-ptt")
+            kb = UInput({ecodes.EV_KEY: keys}, name="mic-ptt")
         except PermissionError:
             sys.exit("No access to /dev/uinput - run setup.sh once (needs sudo), then log out/in.")
 
@@ -235,7 +297,9 @@ def main():
             pass
 
     def send(down):
-        if kb and args.tap:     # tap mode: one tap starts recording, the next stops + sends
+        if args.transcribe:
+            pass
+        elif kb and args.tap:     # tap mode: one tap starts recording, the next stops + sends
             kb.write(ecodes.EV_KEY, code, 1)
             kb.syn()
             kb.write(ecodes.EV_KEY, code, 0)
@@ -262,16 +326,27 @@ def main():
     floor = calibrate(read, args.calibrate)
     if floor > -60:
         print(f"warning: the floor measured {floor:.1f} dB - was Transmit held? restart with it released", flush=True)
-    print(f"{'tap' if args.tap else 'hold'} mode (Claude Code voice mode must match: /voice {'tap' if args.tap else 'hold'})",
-          flush=True)
+    if args.transcribe:
+        print("transcribe mode: speech is pasted into the focused window" + (" and sent" if args.enter else ""), flush=True)
+    else:
+        print(f"{'tap' if args.tap else 'hold'} mode (Claude Code voice mode must match: /voice {'tap' if args.tap else 'hold'})",
+              flush=True)
     print(f"noise floor {floor:.1f} dB; listening (release on cut-off or {args.hang}s silence)", flush=True)
     det = Detector(args, floor)
+    stt = Transcriber(args, kb) if args.transcribe else None
+    preroll = int(0.1 * RATE / HOP)             # keep 100 ms before the press
+    hops = []
     try:
         while True:
-            ev = det.step(read())
+            hop = read()
+            ev = det.step(hop)
+            hops = (hops + [hop]) if det.held or ev == "release" else (hops + [hop])[-preroll:]
             if ev:
                 send(ev == "press")
-                print(f"{clock()} {ev.upper():7s} {args.key}", flush=True)
+                print(f"{clock()} {ev.upper():7s} {'' if stt else args.key}", flush=True)
+                if ev == "release" and stt:
+                    stt.add(np.concatenate(hops))
+                    hops = []
     except EOFError:
         stop()
 
