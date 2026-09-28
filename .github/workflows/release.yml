@@ -1,0 +1,38 @@
+name: release
+
+# Push a tag like v0.1.0 to build the RPM and attach it to a GitHub release.
+# "Run workflow" builds it too, as a downloadable artifact only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  rpm:
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build RPM
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) export VERSION="${GITHUB_REF_NAME#v}" ;;
+            *)            export VERSION=0.0.0 RELEASE="0.git${GITHUB_SHA::7}" ;;
+          esac
+          packaging/rpm/build-rpm.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: dist/*.rpm
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.rpm
+          generate_release_notes: true

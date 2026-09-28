@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/rostrum/.venv/bin/python /opt/rostrum/app.py "$@"

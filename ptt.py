@@ -4,9 +4,10 @@ Mic push-to-talk: holds a key while you're transmitting through the MicFX on the
 The MicFX passes no audio at all unless Transmit is held, and the USB card's line is digitally
 silent otherwise, so:
   press   -> ~15 ms of sound above the silent floor (the button's press click, or speech)
-  release -> the sound cuts off dead within 10 ms (the button opening), or --hang s of silence
-             (released during a pause, when there's nothing to cut off)
-Natural pauses in speech fade over 60+ ms, so they never look like a release.
+  release -> the sound cuts off dead within 10 ms (the button opening) and stays off for 0.3 s,
+             or --hang s of silence (released during a pause, when there's nothing to cut off)
+Natural pauses in speech fade over 60+ ms; fast speech can cut off dead between words, but
+sound comes back within the 0.3 s, so neither looks like a release.
 
   .venv/bin/python ptt.py                    # hold SPACE for Claude Code voice mode
   .venv/bin/python ptt.py --dry-run          # print events only, no key presses
@@ -32,7 +33,7 @@ HOP = 240                       # 5 ms analysis step
 
 
 class Detector:
-    """Sound out of silence -> press. Sound cut off dead, or --hang s of silence -> release."""
+    """Sound out of silence -> press. Sound cut off dead and staying off, or --hang s of silence -> release."""
 
     def __init__(self, args, floor_db):
         self.a = args
@@ -40,6 +41,7 @@ class Detector:
         self.held = False
         self.recent = []            # rms dB of recent 5 ms hops
         self.quiet_for = 0.0
+        self.cut = False            # sound cut off dead: a release, unless it comes back (a gap between words)
 
     def step(self, hop):
         """Feed 5 ms of samples; returns 'press', 'release' or None."""
@@ -52,15 +54,20 @@ class Detector:
         if not self.held:
             # 3 of the last 4 hops above the silent floor: the press click or speech
             if sum(r > self.floor + self.a.margin for r in self.recent[-4:]) >= 3:
-                self.held, self.quiet_for = True, 0.0
+                self.held, self.quiet_for, self.cut = True, 0.0, False
                 return "press"
             return None
 
         silent = rms < self.floor + self.a.quiet_margin
         self.quiet_for = self.quiet_for + HOP / RATE if silent else 0.0
-        # the button opening: loud within the last 10 ms, silent now
+        # the button opening: loud within the last 10 ms, silent now. Fast speech can cut off just
+        # as dead between words, so it only counts once the silence has lasted --cut-confirm.
         if silent and len(self.recent) > 2 and max(self.recent[-3:-1]) > self.floor + self.a.cut_margin:
-            self.held = False
+            self.cut = True
+        elif not silent:
+            self.cut = False
+        if self.cut and self.quiet_for >= self.a.cut_confirm:
+            self.held = self.cut = False
             return "release"
         if self.quiet_for >= self.a.hang:
             self.held = False
@@ -157,8 +164,9 @@ def claude_voice_mode():
         return "hold"
 
 
-LOCK = Path.home() / ".cache" / "mic-ptt" / "lock"
-TTS_DIR = Path.home() / "Code" / "claude-tts"
+LOCK = Path.home() / ".cache" / "rostrum" / "lock"
+ENGINE = Path(__file__).resolve()
+TTS_DIR = ENGINE.parent / "tts"
 
 
 def start_ttsd(args):
@@ -168,10 +176,32 @@ def start_ttsd(args):
         return None
     if not (TTS_DIR / "ttsd.py").exists():
         return None
-    log = open(Path.home() / ".cache" / "claude-tts" / "ttsd.log", "a")
+    logfile = Path.home() / ".cache" / "rostrum" / "ttsd.log"
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    log = open(logfile, "a")
     print("starting the speech service (ttsd)", flush=True)
-    return subprocess.Popen([str(TTS_DIR / ".venv" / "bin" / "python"), str(TTS_DIR / "ttsd.py")],
+    return subprocess.Popen([sys.executable, str(TTS_DIR / "ttsd.py")],
                             cwd=TTS_DIR, stdout=log, stderr=log)
+
+
+def runs_engine(pid, engine):
+    """True if process pid is running this install's ptt.py (a relative path resolves against its cwd)."""
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    for c in cmd:
+        if not c.endswith(b"ptt.py"):
+            continue
+        path = Path(os.fsdecode(c))
+        if not path.is_absolute():
+            try:                        # reading another process's cwd can be refused
+                path = Path(os.readlink(f"/proc/{pid}/cwd")) / path
+            except OSError:
+                continue
+        if path.resolve() == engine:
+            return True
+    return False
 
 
 def single_instance():
@@ -183,7 +213,7 @@ def single_instance():
     for proc in Path("/proc").glob("[0-9]*"):
         try:
             cmd = (proc / "cmdline").read_bytes().split(b"\0")
-            if int(proc.name) != me and any(c.endswith(b"mic-ptt/ptt.py") for c in cmd) \
+            if int(proc.name) != me and runs_engine(int(proc.name), ENGINE) \
                     and b"--file" not in cmd and b"--dry-run" not in cmd:
                 print(f"stopping the running copy (pid {proc.name})", flush=True)
                 os.kill(int(proc.name), signal.SIGTERM)
@@ -223,6 +253,9 @@ def main():
     ap.add_argument("--quiet-margin", type=float, default=12.0, help="dB above the floor that still counts as silent")
     ap.add_argument("--cut-margin", type=float, default=25.0,
                     help="release when sound this far above the floor drops to silent within 10 ms")
+    ap.add_argument("--cut-confirm", type=float, default=0.3,
+                    help="a cut-off only counts as a release once the silence lasts this long (s); "
+                         "shorter gaps are fast speech between words")
     ap.add_argument("--hang", type=float, default=3.0, help="release after this long with no sound")
     ap.add_argument("--calibrate", type=float, default=1.5, help="seconds to measure the idle floor at startup")
     ap.add_argument("--file", help="analyse a 48 kHz mono WAV recording instead of the live mic")
@@ -267,7 +300,7 @@ def main():
 
         def read():
             return np.frombuffer(rec.stdout.read(HOP * 2), dtype=np.int16).astype(float) / 32768
-        clock = lambda: time.strftime("%H:%M:%S")
+        clock = lambda: time.strftime("%H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
 
     kb = None
     if not args.dry_run:
@@ -275,12 +308,12 @@ def main():
         code = ecodes.ecodes[args.key]
         keys = [ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_V, ecodes.KEY_ENTER] if args.transcribe else [code]
         try:
-            kb = UInput({ecodes.EV_KEY: keys}, name="mic-ptt")
+            kb = UInput({ecodes.EV_KEY: keys}, name="rostrum")
         except PermissionError:
             sys.exit("No access to /dev/uinput - run setup.sh once (needs sudo), then log out/in.")
 
-    tts_pid = Path.home() / ".cache" / "claude-tts" / "pid"
-    tts_sock = Path.home() / ".cache" / "claude-tts" / "sock"
+    tts_pid = Path.home() / ".cache" / "rostrum" / "tts.pid"
+    tts_sock = Path.home() / ".cache" / "rostrum" / "tts.sock"
 
     def stop_speech():
         import socket
@@ -317,13 +350,18 @@ def main():
             send(False)
         if not (args.file or args.dry_run) and ttsd:
             ttsd.terminate()
+        if not args.file:
+            rec.terminate()     # else parecord outlives us and writes errors into the (next) log
         sys.exit(0)
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
     print(f"calibrating for {args.calibrate}s - keep the button released...", flush=True)
-    floor = calibrate(read, args.calibrate)
+    try:
+        floor = calibrate(read, args.calibrate)
+    except EOFError:
+        sys.exit(f"the recording is shorter than the {args.calibrate}s calibration")
     if floor > -60:
         print(f"warning: the floor measured {floor:.1f} dB - was Transmit held? restart with it released", flush=True)
     if args.transcribe:
