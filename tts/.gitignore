@@ -1,7 +1,0 @@
-.venv/
-__pycache__/
-# model files (~490 MB), not versioned:
-#   kokoro/kokoro-v1.0.onnx, kokoro/kokoro-v1.0.int8.onnx, kokoro/voices-v1.0.bin  (kokoro-onnx v1.0 release)
-#   voices/en_US-lessac-medium.onnx(.json)                                         (Piper voice)
-kokoro/
-voices/

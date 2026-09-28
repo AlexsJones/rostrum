@@ -158,7 +158,7 @@ def claude_voice_mode():
 
 
 LOCK = Path.home() / ".cache" / "mic-ptt" / "lock"
-TTS_DIR = Path.home() / "Code" / "claude-tts"
+TTS_DIR = Path(__file__).resolve().parent / "tts"
 
 
 def start_ttsd(args):
@@ -168,9 +168,11 @@ def start_ttsd(args):
         return None
     if not (TTS_DIR / "ttsd.py").exists():
         return None
-    log = open(Path.home() / ".cache" / "claude-tts" / "ttsd.log", "a")
+    logfile = Path.home() / ".cache" / "claude-tts" / "ttsd.log"
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    log = open(logfile, "a")
     print("starting the speech service (ttsd)", flush=True)
-    return subprocess.Popen([str(TTS_DIR / ".venv" / "bin" / "python"), str(TTS_DIR / "ttsd.py")],
+    return subprocess.Popen([sys.executable, str(TTS_DIR / "ttsd.py")],
                             cwd=TTS_DIR, stdout=log, stderr=log)
 
 

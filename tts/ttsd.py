@@ -30,6 +30,7 @@ SOCK = speak.SOCK
 
 class Speaker:
     def __init__(self):
+        speak.ensure_kokoro()
         so = ort.SessionOptions()
         so.intra_op_num_threads, so.inter_op_num_threads = speak.KOKORO_THREADS, 1
         self.kokoro = Kokoro.from_session(

@@ -8,7 +8,7 @@ sentences. A new reply (or mic-ptt's press) stops the previous one.
   touch ~/.config/claude-tts/muted   # mute      rm it to unmute
   ~/.config/claude-tts/sink          # preferred output name prefixes, one per line (falls back to default)
   speak.py --stop                    # stop talking now
-  ttsd.py                            # keeps the voice loaded (mic-ptt starts it)
+  ttsd.py                            # keeps the voice loaded (mic-ptt starts it); downloads Kokoro on first run
   echo "hello" | speak.py --text     # speak arbitrary text
 """
 import json
@@ -20,8 +20,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-VOICE = HERE / "voices" / "en_US-lessac-medium.onnx"
-PIPER = HERE / ".venv" / "bin" / "piper"
+MODELS = Path(os.environ.get("MIC_PTT_MODELS") or Path.home() / ".local" / "share" / "mic-ptt" / "models")
+VOICE = MODELS / "piper" / "en_US-lessac-medium.onnx"     # optional fallback voice
+PIPER = Path(sys.executable).parent / "piper"
 PIDFILE = Path.home() / ".cache" / "claude-tts" / "pid"
 MUTED = Path.home() / ".config" / "claude-tts" / "muted"
 SOCK = Path.home() / ".cache" / "claude-tts" / "sock"          # ttsd, when running
@@ -103,9 +104,23 @@ def pick_sink():
     return None
 
 
-KOKORO_MODEL = HERE / "kokoro" / "kokoro-v1.0.onnx"
-KOKORO_VOICES = HERE / "kokoro" / "voices-v1.0.bin"
+KOKORO_MODEL = MODELS / "kokoro" / "kokoro-v1.0.onnx"
+KOKORO_VOICES = MODELS / "kokoro" / "voices-v1.0.bin"
 KOKORO_VOICE, KOKORO_LANG, KOKORO_THREADS = "bf_emma", "en-gb", 8
+KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
+
+
+def ensure_kokoro():
+    """Download the Kokoro model and voices (~350 MB) if they aren't there yet."""
+    import urllib.request
+    for path in (KOKORO_MODEL, KOKORO_VOICES):
+        if path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        part = path.with_suffix(path.suffix + ".part")
+        print(f"downloading {path.name} from {KOKORO_URL}", file=sys.stderr, flush=True)
+        urllib.request.urlretrieve(KOKORO_URL + path.name, part)
+        part.rename(path)
 
 
 def player(rate):

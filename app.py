@@ -9,12 +9,13 @@ window is closed; the app finds it again through ptt.py's lock file and reads it
 """
 import json
 import os
-import re
 import signal
 import socket
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tts"))
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QIcon, QTextCursor
@@ -28,7 +29,7 @@ ICON = HERE / "icons" / "mic-ptt.svg"
 CONFIG = Path.home() / ".config" / "mic-ptt" / "config.json"
 LOG = Path.home() / ".cache" / "mic-ptt" / "ptt.log"
 LOCK = Path.home() / ".cache" / "mic-ptt" / "lock"          # holds the running ptt.py's pid
-TTS_DIR = Path.home() / "Code" / "claude-tts"
+TTS_DIR = HERE / "tts"
 TTS_SOCK = Path.home() / ".cache" / "claude-tts" / "sock"
 TTS_MUTED = Path.home() / ".config" / "claude-tts" / "muted"
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
@@ -108,20 +109,42 @@ def whisper_downloaded(name):
 
 
 def tts_info():
-    """Model, voice and wiring of the Kokoro speech service, read from claude-tts/speak.py."""
-    info = {"model": None, "voice": "?", "lang": "?", "size": None}
+    """Model, voice and wiring of the Kokoro speech service (tts/speak.py)."""
+    import speak
+    model = speak.KOKORO_MODEL
+    return {"model": model, "size": model.stat().st_size if model.exists() else None,
+            "voice": speak.KOKORO_VOICE, "lang": speak.KOKORO_LANG,
+            "wired": [name for name, cfg in TTS_HOOKS if cfg.exists() and "speak.py" in cfg.read_text()]}
+
+
+SPEAK_HOOK = f'"{PYTHON}" "{TTS_DIR / "speak.py"}" 2>/dev/null || true'
+
+
+def claude_hook():
+    """The command of Claude Code's Stop hook that reads replies aloud, or None."""
     try:
-        src = (TTS_DIR / "speak.py").read_text()
-        if m := re.search(r'KOKORO_MODEL = HERE / "(\w+)" / "([^"]+)"', src):
-            path = TTS_DIR / m[1] / m[2]
-            info["model"] = path
-            info["size"] = path.stat().st_size if path.exists() else None
-        if m := re.search(r'KOKORO_VOICE, KOKORO_LANG, KOKORO_THREADS = "([^"]+)", "([^"]+)"', src):
-            info["voice"], info["lang"] = m[1], m[2]
+        stops = json.loads(CLAUDE_SETTINGS.read_text()).get("hooks", {}).get("Stop", [])
+    except (OSError, ValueError):
+        return None
+    return next((h["command"] for g in stops for h in g.get("hooks", []) if "speak.py" in h.get("command", "")), None)
+
+
+def set_claude_hook(on):
+    """Add (or remove) the Stop hook in ~/.claude/settings.json; any older speak.py hook is replaced."""
+    try:
+        cfg = json.loads(CLAUDE_SETTINGS.read_text())
     except OSError:
-        pass
-    info["wired"] = [name for name, cfg in TTS_HOOKS if cfg.exists() and "claude-tts" in cfg.read_text()]
-    return info
+        cfg = {}
+    stops = [g for g in cfg.setdefault("hooks", {}).get("Stop", [])
+             if not any("speak.py" in h.get("command", "") for h in g.get("hooks", []))]
+    if on:
+        stops.append({"hooks": [{"type": "command", "command": SPEAK_HOOK, "async": True}]})
+    if stops:
+        cfg["hooks"]["Stop"] = stops
+    else:
+        cfg["hooks"].pop("Stop", None)
+    CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    CLAUDE_SETTINGS.write_text(json.dumps(cfg, indent=2) + "\n")
 
 
 def tts_running():
@@ -212,8 +235,14 @@ class Window(QWidget):
         self.tts_engine.setWordWrap(True)
         self.tts_engine.setTextInteractionFlags(Qt.TextSelectableByMouse)
         form.addRow("Engine:", self.tts_engine)
+        wired = QHBoxLayout()
         self.tts_wired = QLabel()
-        form.addRow("Wired to:", self.tts_wired)
+        self.tts_wired.setWordWrap(True)
+        self.hook_btn = QPushButton()
+        self.hook_btn.clicked.connect(self.on_hook)
+        wired.addWidget(self.tts_wired, 1)
+        wired.addWidget(self.hook_btn)
+        form.addRow("Wired to:", wired)
         self.tts_state = QLabel()
         form.addRow("Service:", self.tts_state)
         self.tts = QCheckBox("Keep the voice loaded while push-to-talk runs (replies start in ~1 s)")
@@ -288,6 +317,10 @@ class Window(QWidget):
     def set_backend(self, name):
         (self.rb_generic if name == "generic" else self.rb_claude).setChecked(True)
 
+    def on_hook(self):
+        set_claude_hook(claude_hook() != SPEAK_HOOK)
+        self.refresh_static()
+
     def on_mute(self, on):
         TTS_MUTED.parent.mkdir(parents=True, exist_ok=True)
         TTS_MUTED.touch() if on else TTS_MUTED.unlink(missing_ok=True)
@@ -309,13 +342,20 @@ class Window(QWidget):
                                  else f"{name}: downloads from Hugging Face on first start")
 
         t = tts_info()
-        if t["model"]:
-            size = f", {t['size'] / 1e6:.0f} MB" if t["size"] else " (missing!)"
-            self.tts_engine.setText(f"Kokoro v1.0, on this computer — voice {t['voice']} ({t['lang']})\n"
-                                    f"{t['model']}{size}")
+        size = f"{t['size'] / 1e6:.0f} MB" if t["size"] else "downloads (~350 MB) the first time the voice starts"
+        self.tts_engine.setText(f"Kokoro v1.0, on this computer — voice {t['voice']} ({t['lang']})\n"
+                                f"{t['model']} — {size}")
+        hook = claude_hook()
+        wired = [w for w in t["wired"] if w != "Claude Code"]
+        if hook == SPEAK_HOOK:
+            wired.insert(0, "Claude Code (reply hook)")
+            self.hook_btn.setText("Disconnect Claude Code")
+        elif hook:
+            wired.insert(0, "Claude Code (reply hook, via an older install)")
+            self.hook_btn.setText("Update Claude Code hook")
         else:
-            self.tts_engine.setText(f"not installed ({TTS_DIR})")
-        self.tts_wired.setText(", ".join(f"{w} (reply hook)" for w in t["wired"]) or "nothing")
+            self.hook_btn.setText("Connect Claude Code")
+        self.tts_wired.setText(", ".join(wired) or "nothing — replies aren't read aloud")
         mic = usb_mic()
         self.mic.setText(mic or "USB sound card not found — plug it in and restart")
 
