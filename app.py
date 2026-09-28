@@ -17,6 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tts"))
 
+from ptt import setup_mixer, usb_card  # noqa: E402
+
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QIcon, QTextCursor
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFormLayout, QGroupBox,
@@ -89,6 +91,15 @@ def engine_pid():
     except (OSError, ValueError):
         return None
     return pid if runs_engine(pid, HERE / "ptt.py") else None
+
+
+def engine_holding():
+    """True while the engine has Transmit down (its last logged event is a press)."""
+    try:
+        lines = LOG.read_text(errors="replace").splitlines()
+    except OSError:
+        return False
+    return next((" PRESS " in l for l in reversed(lines) if " PRESS " in l or " RELEASE " in l), False)
 
 
 def engine_args(cfg):
@@ -185,6 +196,28 @@ def usb_mic():
     return next((l.split("\t")[1] for l in out.splitlines() if "usb-C-Media" in l and ".monitor" not in l), None)
 
 
+class NoWheel:
+    """Scrolling the window over a spin box or combo box must not change it: only once clicked into."""
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, ev):
+        if self.hasFocus():
+            super().wheelEvent(ev)
+        else:
+            ev.ignore()
+
+
+class SpinBox(NoWheel, QSpinBox):
+    pass
+
+
+class ComboBox(NoWheel, QComboBox):
+    pass
+
+
 def note(text):
     lbl = QLabel(text)
     lbl.setWordWrap(True)
@@ -232,7 +265,7 @@ class Window(QWidget):
         self.stt_engine = QLabel()
         self.stt_engine.setWordWrap(True)
         form.addRow("Engine:", self.stt_engine)
-        self.model = QComboBox()
+        self.model = ComboBox()
         for name, desc in WHISPER_MODELS.items():
             self.model.addItem(f"{name} — {desc}", name)
         self.model.setCurrentIndex(max(0, self.model.findData(self.cfg["whisper_model"])))
@@ -280,7 +313,7 @@ class Window(QWidget):
         self.mic = QLabel()
         self.mic.setWordWrap(True)
         form.addRow("Input:", self.mic)
-        self.gain = QSpinBox()
+        self.gain = SpinBox()
         self.gain.setRange(0, 35)
         self.gain.setValue(self.cfg["gain"])
         self.gain.setSuffix("   (35 clips speech)")
@@ -307,16 +340,24 @@ class Window(QWidget):
     # --- actions
 
     def changed(self):
-        """Save the settings; a running engine is restarted (after a pause, so a spin box doesn't thrash)."""
+        """Save the settings. Gain goes straight to the sound card; anything else restarts a running
+        engine (after a pause, so clicking through a spin box doesn't thrash)."""
+        before = dict(self.cfg)
         self.cfg.update(backend="generic" if self.rb_generic.isChecked() else "claude",
                         whisper_model=self.model.currentData(), send_enter=self.enter.isChecked(),
                         tts=self.tts.isChecked(), gain=self.gain.value())
         save_config(self.cfg)
         self.refresh_static()
-        if engine_pid():
+        if self.cfg["gain"] != before["gain"]:
+            setup_mixer(usb_card(), self.cfg["gain"])
+        if engine_pid() and any(self.cfg[k] != before[k] for k in self.cfg if k != "gain"):
             self.restart_timer.start()
 
     def restart(self):
+        """Never mid-sentence: stopping the engine while Transmit is down would cut off the dictation."""
+        if engine_holding():
+            self.restart_timer.start(1000)
+            return
         self.log.appendPlainText("— restarting with new settings (keep Transmit released) —")
         self.start()
 

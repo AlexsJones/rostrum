@@ -89,9 +89,16 @@ def usb_source(match):
     names = [l.split("\t")[1] for l in out.splitlines() if match in l and ".monitor" not in l]
     if not names:
         sys.exit(f"no input matching '{match}' - is the USB sound card plugged in?")
-    card = next((l.split()[0] for l in Path("/proc/asound/cards").read_text().splitlines()
-                 if l.strip() and l.split()[0].isdigit() and "USB-Audio" in l), None)
-    return names[0], card
+    return names[0], usb_card()
+
+
+def usb_card():
+    """ALSA card number of the USB sound card, or None."""
+    try:
+        cards = Path("/proc/asound/cards").read_text().splitlines()
+    except OSError:
+        return None
+    return next((l.split()[0] for l in cards if l.strip() and l.split()[0].isdigit() and "USB-Audio" in l), None)
 
 
 def setup_mixer(card, gain):
