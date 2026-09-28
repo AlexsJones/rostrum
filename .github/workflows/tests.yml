@@ -20,6 +20,7 @@ jobs:
 
       - name: Python environment
         run: |
+          uv python install 3.12      # Fedora's uv won't download Python on its own
           uv venv --python 3.12 .venv
           uv pip install --python .venv/bin/python -r requirements.txt
 
