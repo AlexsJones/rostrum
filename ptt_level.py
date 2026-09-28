@@ -53,7 +53,7 @@ def main():
     kb = None
     if not args.dry_run:
         try:
-            kb = UInput({ecodes.EV_KEY: [code]}, name="mic-ptt")
+            kb = UInput({ecodes.EV_KEY: [code]}, name="rostrum")
         except PermissionError:
             sys.exit("No access to /dev/uinput - run setup.sh once (needs sudo), then log out/in.")
 

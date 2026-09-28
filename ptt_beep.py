@@ -146,7 +146,7 @@ def main():
         from evdev import UInput, ecodes
         code = ecodes.ecodes[args.key]
         try:
-            kb = UInput({ecodes.EV_KEY: [code]}, name="mic-ptt")
+            kb = UInput({ecodes.EV_KEY: [code]}, name="rostrum")
         except PermissionError:
             sys.exit("No access to /dev/uinput - run setup.sh once (needs sudo), then log out/in.")
 

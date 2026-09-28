@@ -3,12 +3,12 @@ Claude Code Stop hook: read the last reply aloud (Kokoro, British 'Emma'; Piper 
 
 Reads the hook JSON on stdin. Speaks only prose: code blocks, tables, inline code,
 URLs and markdown symbols are dropped, and long replies are cut to the first few
-sentences. A new reply (or mic-ptt's press) stops the previous one.
+sentences. A new reply (or Rostrum's press) stops the previous one.
 
-  touch ~/.config/claude-tts/muted   # mute      rm it to unmute
-  ~/.config/claude-tts/sink          # preferred output name prefixes, one per line (falls back to default)
+  touch ~/.config/rostrum/muted   # mute      rm it to unmute
+  ~/.config/rostrum/sink          # preferred output name prefixes, one per line (falls back to default)
   speak.py --stop                    # stop talking now
-  ttsd.py                            # keeps the voice loaded (mic-ptt starts it); downloads Kokoro on first run
+  ttsd.py                            # keeps the voice loaded (Rostrum starts it); downloads Kokoro on first run
   echo "hello" | speak.py --text     # speak arbitrary text
 """
 import json
@@ -20,13 +20,13 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-MODELS = Path(os.environ.get("MIC_PTT_MODELS") or Path.home() / ".local" / "share" / "mic-ptt" / "models")
+MODELS = Path(os.environ.get("ROSTRUM_MODELS") or Path.home() / ".local" / "share" / "rostrum" / "models")
 VOICE = MODELS / "piper" / "en_US-lessac-medium.onnx"     # optional fallback voice
 PIPER = Path(sys.executable).parent / "piper"
-PIDFILE = Path.home() / ".cache" / "claude-tts" / "pid"
-MUTED = Path.home() / ".config" / "claude-tts" / "muted"
-SOCK = Path.home() / ".cache" / "claude-tts" / "sock"          # ttsd, when running
-SINK_PREF = Path.home() / ".config" / "claude-tts" / "sink"     # sink-name prefix, e.g. bluez_output.F0_D3
+PIDFILE = Path.home() / ".cache" / "rostrum" / "tts.pid"
+MUTED = Path.home() / ".config" / "rostrum" / "muted"
+SOCK = Path.home() / ".cache" / "rostrum" / "tts.sock"          # ttsd, when running
+SINK_PREF = Path.home() / ".config" / "rostrum" / "sink"     # sink-name prefix, e.g. bluez_output.F0_D3
 MAX_CHARS = 600
 
 
@@ -174,7 +174,7 @@ def speak_piper(text):
 
 
 def say(text):
-    """Speak in a separate process group so a new reply or a mic-ptt press can stop it."""
+    """Speak in a separate process group so a new reply or a Rostrum press can stop it."""
     if send({"cmd": "say", "text": text}):     # ttsd has the voice loaded already
         return
     stop_current()

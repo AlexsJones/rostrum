@@ -1,3 +1,0 @@
-#!/bin/sh
-# The push-to-talk engine without the window, e.g. mic-ptt-cli --transcribe
-exec /opt/mic-ptt/.venv/bin/python /opt/mic-ptt/ptt.py "$@"

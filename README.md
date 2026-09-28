@@ -1,4 +1,4 @@
-# Mic PTT
+# Rostrum
 
 Push-to-talk voice input for coding agents, driven by a physical **Transmit** button on a
 hand-held microphone. Hold the button, speak, let go:
@@ -8,7 +8,7 @@ hand-held microphone. Hold the button, speak, let go:
 - **Generic** target: transcribes locally with Whisper and pastes the text into whatever
   window is active: OpenCode, Codex, a terminal, a browser.
 
-A small control app (**Mic PTT** in the app menu) starts/stops it, switches the target, and
+A small control app (**Rostrum** in the app menu) starts/stops it, switches the target, and
 shows which speech-to-text and text-to-speech models are loaded and where they're wired up.
 
 ## Hardware
@@ -43,15 +43,15 @@ there, so detection is from the audio.
 
 ### Fedora (RPM)
 
-Download `mic-ptt-*.x86_64.rpm` from the [releases](https://github.com/AlexsJones/mic-ptt/releases), then:
+Download `rostrum-*.x86_64.rpm` from the [releases](https://github.com/AlexsJones/rostrum/releases), then:
 
 ```sh
-sudo dnf install ./mic-ptt-*.x86_64.rpm
+sudo dnf install ./rostrum-*.x86_64.rpm
 ```
 
-It installs into `/opt/mic-ptt` with its own Python, adds **Mic PTT** to the app menu, and
+It installs into `/opt/rostrum` with its own Python, adds **Rostrum** to the app menu, and
 gives the logged-in user access to `/dev/uinput` (no group changes or `setup.sh` needed).
-`mic-ptt-cli` runs the engine without the window. Voice models download on first use
+`rostrum-cli` runs the engine without the window. Voice models download on first use
 (Whisper `base.en` ~150 MB, Kokoro ~350 MB).
 
 ### From source (Linux)
@@ -60,11 +60,11 @@ Needs Python 3.12+, [uv](https://docs.astral.sh/uv/), PipeWire (`pactl`, `pareco
 `alsa-utils` (`amixer`) and `wl-clipboard` (`wl-copy`).
 
 ```sh
-git clone <this repo> ~/Code/mic-ptt && cd ~/Code/mic-ptt
+git clone <this repo> ~/Code/rostrum && cd ~/Code/rostrum
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
 ./setup.sh              # once, needs sudo: lets you create a virtual keyboard (/dev/uinput); then log out/in
-./install-desktop.sh    # adds "Mic PTT" to the app menu
+./install-desktop.sh    # adds "Rostrum" to the app menu
 ```
 
 To build the RPM yourself: `podman run --rm -v "$PWD":/src:Z -w /src fedora:44 packaging/rpm/build-rpm.sh`
@@ -72,7 +72,7 @@ To build the RPM yourself: `podman run --rm -v "$PWD":/src:Z -w /src fedora:44 p
 
 ## Use
 
-Open **Mic PTT** from the app menu and press **Start**. Keep Transmit released for the first
+Open **Rostrum** from the app menu and press **Start**. Keep Transmit released for the first
 second and a half while it measures the idle line. Push-to-talk keeps running after the window
 is closed.
 
@@ -99,17 +99,17 @@ Only one copy runs at a time; starting another stops the first.
 ### Text to speech
 
 Kokoro v1.0 (voice *bf_emma*, British English), run locally by `tts/ttsd.py`, which
-push-to-talk starts alongside itself. The model downloads to `~/.local/share/mic-ptt/models`
+push-to-talk starts alongside itself. The model downloads to `~/.local/share/rostrum/models`
 the first time. **Connect Claude Code** in the app adds a Stop hook to
 `~/.claude/settings.json` so Claude's replies are read aloud (`tts/speak.py`). Any agent
 can use it by sending `{"cmd": "say", "text": "..."}` to the Unix socket
-`~/.cache/claude-tts/sock`. Mute with the checkbox in the app, or
-`touch ~/.config/claude-tts/muted`.
+`~/.cache/rostrum/tts.sock`. Mute with the checkbox in the app, or
+`touch ~/.config/rostrum/muted`.
 
 ## Troubleshooting
 
 - **Keys fire but Claude Code gets no text.** Claude's voice mode (`/voice tap` or
-  `/voice hold`) must match what Mic PTT sends. It reads the mode from
+  `/voice hold`) must match what Rostrum sends. It reads the mode from
   `~/.claude/settings.json` at startup, so restart it after changing `/voice`.
 - **"the floor measured … was Transmit held?"** Restart with the button released.
 - **"no input matching 'usb-C-Media'"**: the USB sound card isn't plugged in, or it's a

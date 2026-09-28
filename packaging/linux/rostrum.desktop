@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=Mic PTT
+Name=Rostrum
 Comment=Push-to-talk voice input for Claude Code and other apps
-Exec=mic-ptt
-Icon=mic-ptt
+Exec=rostrum
+Icon=rostrum
 Terminal=false
 Categories=Utility;
 Keywords=voice;microphone;dictation;claude;speech;
-StartupWMClass=mic-ptt
+StartupWMClass=rostrum

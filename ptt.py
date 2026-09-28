@@ -157,8 +157,9 @@ def claude_voice_mode():
         return "hold"
 
 
-LOCK = Path.home() / ".cache" / "mic-ptt" / "lock"
-TTS_DIR = Path(__file__).resolve().parent / "tts"
+LOCK = Path.home() / ".cache" / "rostrum" / "lock"
+ENGINE = Path(__file__).resolve()
+TTS_DIR = ENGINE.parent / "tts"
 
 
 def start_ttsd(args):
@@ -168,12 +169,32 @@ def start_ttsd(args):
         return None
     if not (TTS_DIR / "ttsd.py").exists():
         return None
-    logfile = Path.home() / ".cache" / "claude-tts" / "ttsd.log"
+    logfile = Path.home() / ".cache" / "rostrum" / "ttsd.log"
     logfile.parent.mkdir(parents=True, exist_ok=True)
     log = open(logfile, "a")
     print("starting the speech service (ttsd)", flush=True)
     return subprocess.Popen([sys.executable, str(TTS_DIR / "ttsd.py")],
                             cwd=TTS_DIR, stdout=log, stderr=log)
+
+
+def runs_engine(pid, engine):
+    """True if process pid is running this install's ptt.py (a relative path resolves against its cwd)."""
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    for c in cmd:
+        if not c.endswith(b"ptt.py"):
+            continue
+        path = Path(os.fsdecode(c))
+        if not path.is_absolute():
+            try:                        # reading another process's cwd can be refused
+                path = Path(os.readlink(f"/proc/{pid}/cwd")) / path
+            except OSError:
+                continue
+        if path.resolve() == engine:
+            return True
+    return False
 
 
 def single_instance():
@@ -185,7 +206,7 @@ def single_instance():
     for proc in Path("/proc").glob("[0-9]*"):
         try:
             cmd = (proc / "cmdline").read_bytes().split(b"\0")
-            if int(proc.name) != me and any(c.endswith(b"mic-ptt/ptt.py") for c in cmd) \
+            if int(proc.name) != me and runs_engine(int(proc.name), ENGINE) \
                     and b"--file" not in cmd and b"--dry-run" not in cmd:
                 print(f"stopping the running copy (pid {proc.name})", flush=True)
                 os.kill(int(proc.name), signal.SIGTERM)
@@ -277,12 +298,12 @@ def main():
         code = ecodes.ecodes[args.key]
         keys = [ecodes.KEY_LEFTCTRL, ecodes.KEY_LEFTSHIFT, ecodes.KEY_V, ecodes.KEY_ENTER] if args.transcribe else [code]
         try:
-            kb = UInput({ecodes.EV_KEY: keys}, name="mic-ptt")
+            kb = UInput({ecodes.EV_KEY: keys}, name="rostrum")
         except PermissionError:
             sys.exit("No access to /dev/uinput - run setup.sh once (needs sudo), then log out/in.")
 
-    tts_pid = Path.home() / ".cache" / "claude-tts" / "pid"
-    tts_sock = Path.home() / ".cache" / "claude-tts" / "sock"
+    tts_pid = Path.home() / ".cache" / "rostrum" / "tts.pid"
+    tts_sock = Path.home() / ".cache" / "rostrum" / "tts.sock"
 
     def stop_speech():
         import socket

@@ -6,7 +6,7 @@ Listens on a Unix socket for one JSON message per connection:
   {"cmd": "stop"}                 stop speaking now
   {"cmd": "ping"}                 replies "pong"
 
-Started (and stopped) by mic-ptt; speak.py falls back to speaking on its own when
+Started (and stopped) by Rostrum; speak.py falls back to speaking on its own when
 this isn't running.
 """
 import json

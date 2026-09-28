@@ -83,17 +83,18 @@ def calibrate(read, seconds):
     return float(np.median(levels))
 
 
-LOCK = Path.home() / ".cache" / "mic-ptt" / "lock"
-TTS_DIR = Path.home() / "Code" / "claude-tts"
+LOCK = Path.home() / ".cache" / "rostrum" / "lock"
+TTS_DIR = Path(__file__).resolve().parent / "tts"
 
 
 def start_ttsd(args):
     """Start the speech service (keeps Claude's voice loaded) alongside push-to-talk."""
     if args.no_tts or not (TTS_DIR / "ttsd.py").exists():
         return None
-    log = open(Path.home() / ".cache" / "claude-tts" / "ttsd.log", "a")
+    (Path.home() / ".cache" / "rostrum").mkdir(parents=True, exist_ok=True)
+    log = open(Path.home() / ".cache" / "rostrum" / "ttsd.log", "a")
     print("starting the speech service (ttsd)", flush=True)
-    return subprocess.Popen([str(TTS_DIR / ".venv" / "bin" / "python"), str(TTS_DIR / "ttsd.py")],
+    return subprocess.Popen([sys.executable, str(TTS_DIR / "ttsd.py")],
                             cwd=TTS_DIR, stdout=log, stderr=log)
 
 
@@ -106,7 +107,7 @@ def single_instance():
     for proc in Path("/proc").glob("[0-9]*"):
         try:
             cmd = (proc / "cmdline").read_bytes().split(b"\0")
-            if int(proc.name) != me and any(c.endswith(b"mic-ptt/ptt.py") for c in cmd) \
+            if int(proc.name) != me and any(c.endswith(b"ptt.py") and not c.endswith(b"_ptt.py") for c in cmd) \
                     and b"--file" not in cmd and b"--dry-run" not in cmd:
                 print(f"stopping the running copy (pid {proc.name})", flush=True)
                 os.kill(int(proc.name), signal.SIGTERM)
@@ -181,12 +182,12 @@ def main():
         from evdev import UInput, ecodes
         code = ecodes.ecodes[args.key]
         try:
-            kb = UInput({ecodes.EV_KEY: [code]}, name="mic-ptt")
+            kb = UInput({ecodes.EV_KEY: [code]}, name="rostrum")
         except PermissionError:
             sys.exit("No access to /dev/uinput - run setup.sh once (needs sudo), then log out/in.")
 
-    tts_pid = Path.home() / ".cache" / "claude-tts" / "pid"
-    tts_sock = Path.home() / ".cache" / "claude-tts" / "sock"
+    tts_pid = Path.home() / ".cache" / "rostrum" / "tts.pid"
+    tts_sock = Path.home() / ".cache" / "rostrum" / "tts.sock"
 
     def stop_speech():
         import socket

@@ -1,11 +1,11 @@
 """
-Mic PTT: a small control window (and tray icon, where the desktop has one) for ptt.py.
+Rostrum: a small control window (and tray icon, where the desktop has one) for ptt.py.
 
 ptt.py runs as its own background process, so push-to-talk keeps working when this
 window is closed; the app finds it again through ptt.py's lock file and reads its log.
 
   .venv/bin/python app.py
-  ./install-desktop.sh        # add "Mic PTT" to the app menu
+  ./install-desktop.sh        # add "Rostrum" to the app menu
 """
 import json
 import os
@@ -25,13 +25,13 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox,
 
 HERE = Path(__file__).resolve().parent
 PYTHON = HERE / ".venv" / "bin" / "python"
-ICON = HERE / "icons" / "mic-ptt.svg"
-CONFIG = Path.home() / ".config" / "mic-ptt" / "config.json"
-LOG = Path.home() / ".cache" / "mic-ptt" / "ptt.log"
-LOCK = Path.home() / ".cache" / "mic-ptt" / "lock"          # holds the running ptt.py's pid
+ICON = HERE / "icons" / "rostrum.svg"
+CONFIG = Path.home() / ".config" / "rostrum" / "config.json"
+LOG = Path.home() / ".cache" / "rostrum" / "ptt.log"
+LOCK = Path.home() / ".cache" / "rostrum" / "lock"          # holds the running ptt.py's pid
 TTS_DIR = HERE / "tts"
-TTS_SOCK = Path.home() / ".cache" / "claude-tts" / "sock"
-TTS_MUTED = Path.home() / ".config" / "claude-tts" / "muted"
+TTS_SOCK = Path.home() / ".cache" / "rostrum" / "tts.sock"
+TTS_MUTED = Path.home() / ".config" / "rostrum" / "muted"
 HF_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
@@ -61,15 +61,34 @@ def save_config(cfg):
     CONFIG.write_text(json.dumps(cfg, indent=2) + "\n")
 
 
+def runs_engine(pid, engine):
+    """True if process pid is running this install's ptt.py (a relative path resolves against its cwd)."""
+    try:
+        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    for c in cmd:
+        if not c.endswith(b"ptt.py"):
+            continue
+        path = Path(os.fsdecode(c))
+        if not path.is_absolute():
+            try:                        # reading another process's cwd can be refused
+                path = Path(os.readlink(f"/proc/{pid}/cwd")) / path
+            except OSError:
+                continue
+        if path.resolve() == engine:
+            return True
+    return False
+
+
 def engine_pid():
     """pid of the running ptt.py, or None. Never touches the lock itself: ptt.py starting up would
     take a held lock to mean another copy is running, and kill the pid in it."""
     try:
         pid = int(LOCK.read_text().strip())
-        cmd = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
     except (OSError, ValueError):
         return None
-    return pid if any(c.endswith(b"mic-ptt/ptt.py") for c in cmd) else None
+    return pid if runs_engine(pid, HERE / "ptt.py") else None
 
 
 def engine_args(cfg):
@@ -177,7 +196,7 @@ class Window(QWidget):
     def __init__(self, icon):
         super().__init__()
         self.cfg = load_config()
-        self.setWindowTitle("Mic PTT")
+        self.setWindowTitle("Rostrum")
         self.setWindowIcon(icon)
         self.setMinimumWidth(520)
         root = QVBoxLayout(self)
@@ -422,13 +441,13 @@ class Tray(QSystemTrayIcon):
         self.toggle.setText("Stop" if running else "Start")
         self.claude.setChecked(backend == "claude")
         self.generic.setChecked(backend == "generic")
-        self.setToolTip(f"Mic PTT — {'running' if running else 'stopped'}")
+        self.setToolTip(f"Rostrum — {'running' if running else 'stopped'}")
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Mic PTT")
-    app.setDesktopFileName("mic-ptt")       # Wayland app id: matches mic-ptt.desktop
+    app.setApplicationName("Rostrum")
+    app.setDesktopFileName("rostrum")       # Wayland app id: matches rostrum.desktop
     icon = QIcon(str(ICON)) if ICON.exists() else QIcon.fromTheme("audio-input-microphone")
     app.setWindowIcon(icon)
     win = Window(icon)

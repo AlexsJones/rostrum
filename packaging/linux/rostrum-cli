@@ -1,0 +1,3 @@
+#!/bin/sh
+# The push-to-talk engine without the window, e.g. rostrum-cli --transcribe
+exec /opt/rostrum/.venv/bin/python /opt/rostrum/ptt.py "$@"
