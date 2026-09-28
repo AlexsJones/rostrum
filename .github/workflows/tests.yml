@@ -8,13 +8,15 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    # the same Fedora the RPM targets (and the bare Ubuntu runner timed out reaching PyPI)
+    container: registry.fedoraproject.org/fedora:44
     steps:
       - uses: actions/checkout@v4
 
-      - name: System libraries (Qt runs offscreen)
-        run: sudo apt-get update -q && sudo apt-get install -yq libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
-
-      - uses: astral-sh/setup-uv@v6
+      - name: System packages (gcc + headers build evdev; the rest is what Qt needs, as in the RPM)
+        run: |
+          dnf -y -q install uv gcc kernel-headers fontconfig libglvnd-glx mesa-libEGL libxkbcommon \
+            libxkbcommon-x11 libwayland-cursor libwayland-egl libwayland-server dbus-libs >/dev/null
 
       - name: Python environment
         run: |
