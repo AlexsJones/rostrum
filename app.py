@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tts"))
 
-from ptt import setup_mixer, usb_card  # noqa: E402
+from ptt import setup_mixer, tx26_port, usb_card  # noqa: E402
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QIcon, QTextCursor
@@ -189,11 +189,15 @@ def tts_running():
 
 
 def usb_mic():
+    """What push-to-talk will use: the TX-26 when it's plugged in, else the MicFX's USB sound card."""
+    if tx26_port():
+        return "TX-26 (its switch is read over USB)"
     try:
         out = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True, timeout=2).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
-    return next((l.split("\t")[1] for l in out.splitlines() if "usb-C-Media" in l and ".monitor" not in l), None)
+    card = next((l.split("\t")[1] for l in out.splitlines() if "usb-C-Media" in l and ".monitor" not in l), None)
+    return card and f"MicFX on the USB sound card ({card})"
 
 
 class NoWheel:
@@ -417,7 +421,7 @@ class Window(QWidget):
             self.hook_btn.setText("Connect Claude Code")
         self.tts_wired.setText(", ".join(wired) or "nothing — replies aren't read aloud")
         mic = usb_mic()
-        self.mic.setText(mic or "USB sound card not found — plug it in and restart")
+        self.mic.setText(mic or "no TX-26 or USB sound card found — plug one in and restart")
 
     def refresh(self):
         pid = engine_pid()

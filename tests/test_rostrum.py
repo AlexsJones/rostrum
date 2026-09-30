@@ -128,6 +128,33 @@ class Transcribe(unittest.TestCase):
         ])
 
 
+class TX26(unittest.TestCase):
+    """The TX-26's switch arrives over USB serial; a pseudo-terminal stands in for the Teensy."""
+
+    def test_switch_lines_become_press_and_release(self):
+        import pty
+        import select
+        import time
+        master, slave = pty.openpty()
+        proc = subprocess.Popen([PY, str(ROOT / "ptt.py"), "--tx26-port", os.ttyname(slave), "--dry-run", "--no-tap"],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=ROOT)
+        try:
+            sent = b""
+            while b"\n" not in sent and select.select([master], [], [], 10)[0]:
+                sent += os.read(master, 64)
+            self.assertEqual(sent.strip(), b"GAIN 44")
+            for line in (b"LEVEL 0.010", b"PTT 1", b"PTT 1", b"LEVEL 0.300", b"PTT 0"):
+                os.write(master, line + b"\r\n")
+                time.sleep(0.2)
+        finally:
+            os.close(master)            # the TX-26 unplugged: the engine should stop by itself
+            out = proc.communicate(timeout=20)[0]
+            os.close(slave)
+        events = re.findall(r"(PRESS|RELEASE)", out)
+        self.assertEqual(events, ["PRESS", "RELEASE"], out)
+        self.assertIn("unplugged", out)
+
+
 class App(unittest.TestCase):
     """The settings window must never cut off dictation (seen live: scrolling over Gain restarted it)."""
 
