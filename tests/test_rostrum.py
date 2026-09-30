@@ -143,6 +143,9 @@ class TX26(unittest.TestCase):
             while b"\n" not in sent and select.select([master], [], [], 10)[0]:
                 sent += os.read(master, 64)
             self.assertEqual(sent.strip(), b"GAIN 44")
+            for line in (b"PTT 1", b"PTT 0", b"PTT 1", b"PTT 0"):    # flickers: a few ms each, dropped
+                os.write(master, line + b"\r\n")
+                time.sleep(0.005)
             for line in (b"LEVEL 0.010", b"PTT 1", b"PTT 1", b"LEVEL 0.300", b"PTT 0"):
                 os.write(master, line + b"\r\n")
                 time.sleep(0.2)

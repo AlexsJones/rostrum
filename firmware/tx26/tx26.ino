@@ -5,7 +5,7 @@
 //   USB Type: "Serial + MIDI + Audio"   (arduino-cli: --fqbn teensy:avr:teensy40:usb=serialmidiaudio)
 //
 // Serial lines, 115200 (any rate; it's USB):
-//   PTT 1 / PTT 0      the switch was pressed / released (debounced 5 ms); the TX lamp follows it
+//   PTT 1 / PTT 0      the switch was pressed / released (debounced 20 ms); the TX lamp follows it
 //   LEVEL 0.123        the mic's peak level over the last 250 ms, 0..1 (switch held or not)
 // Commands it takes (one per line):
 //   GAIN 44            set the mic preamp, 0..63 dB (answers GAIN 44); lost at power-off
@@ -29,7 +29,7 @@ AudioConnection      toPeak(mic, 0, peak, 0);
 const int FADE_MS = 10;
 const int LAMP_IDLE = 6, LAMP_TX = 255;   // PWM brightness, 0..255: on but idle / transmitting
 AudioControlSGTL5000 codec;
-Bounce               ptt(PTT_PIN, 5);
+Bounce               ptt(PTT_PIN, 20);   // 20 ms stable: lever switches flutter when pressed slowly
 elapsedMillis        sinceLevel;
 
 void setup() {

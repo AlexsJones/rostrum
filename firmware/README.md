@@ -33,7 +33,7 @@ none has audio and a keyboard.
 
 | Line | Meaning |
 |---|---|
-| `PTT 1` / `PTT 0` | switch pressed / released (debounced 5 ms) |
+| `PTT 1` / `PTT 0` | switch pressed / released (debounced 20 ms) |
 | `LEVEL 0.123` | the mic's peak level over the last 250 ms, 0..1, switch held or not |
 | `GAIN 44` (sent) | set the mic preamp, 0..63 dB; answered with `GAIN 44`. Back to 44 at power-off. |
 

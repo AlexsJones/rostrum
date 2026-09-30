@@ -109,7 +109,11 @@ def tx26_source():
 
 class Switch:
     """The TX-26's push-to-talk switch, read from its USB serial port: stands in for Detector.
-    step() ignores the audio and returns 'press' / 'release' as the TX-26 reports them."""
+    step() ignores the audio and returns 'press' / 'release' as the TX-26 reports them, except that
+    a press only counts once it has lasted MIN_HOLD: shorter flickers (a lever switch fluttering, a
+    loose joint) are dropped whole, since in tap mode each one would start and stop a recording."""
+
+    MIN_HOLD = 0.05
 
     def __init__(self, port, gain):
         import queue
@@ -120,7 +124,7 @@ class Switch:
         mode[3] &= ~(termios.ICANON | termios.ECHO)               # raw lines, no echo back
         termios.tcsetattr(self.fd, termios.TCSANOW, mode)
         os.write(self.fd, f"GAIN {gain}\n".encode())
-        self.held, self.events = False, queue.Queue()
+        self.held, self.pending, self.events = False, None, queue.Queue()
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
@@ -141,17 +145,25 @@ class Switch:
 
     def step(self, hop):
         import queue
+        now = time.monotonic()
         try:
             ev = self.events.get_nowait()
         except queue.Empty:
-            return None
+            ev = None
         if ev == "gone":
             raise EOFError("the TX-26 was unplugged")
-        down = ev == b"PTT 1"
-        if down == self.held:
-            return None
-        self.held = down
-        return "press" if down else "release"
+        if ev == b"PTT 1" and not self.held and self.pending is None:
+            self.pending = now
+        elif ev == b"PTT 0":
+            if self.pending is not None:        # let go before it counted: a flicker, drop it
+                self.pending = None
+            elif self.held:
+                self.held = False
+                return "release"
+        if self.pending is not None and now - self.pending >= self.MIN_HOLD:
+            self.pending, self.held = None, True
+            return "press"
+        return None
 
 
 def calibrate(read, seconds):
