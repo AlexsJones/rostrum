@@ -84,6 +84,91 @@ def voiced_clip(hops, loud_db, min_sound):
     return np.concatenate(hops[:last + 1 + int(0.1 * RATE / HOP)])     # keep 100 ms after the last sound
 
 
+TX26_NAMES = ("TX-26", "Teensy MIDI/Audio")   # its USB product name (before the rename, the Teensy default)
+TX26_LOUD_DB = -42.0                          # a hop louder than this is speech (the mic's hiss sits near -48)
+
+
+def tx26_port():
+    """The TX-26's serial port (/dev/ttyACM*), found by its USB product name, or None."""
+    for tty in sorted(Path("/sys/class/tty").glob("ttyACM*")):
+        try:
+            product = (tty / "device" / ".." / "product").resolve().read_text().strip()
+        except OSError:
+            continue
+        if product in TX26_NAMES:
+            return f"/dev/{tty.name}"
+    return None
+
+
+def tx26_source():
+    """The TX-26 microphone's PipeWire source, or None (also when pactl isn't installed)."""
+    try:
+        out = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return None
+    return next((l.split("\t")[1] for l in out.splitlines() if ".monitor" not in l and
+                 any(n.replace(" ", "_").replace("/", "_") in l for n in TX26_NAMES)), None)
+
+
+class Switch:
+    """The TX-26's push-to-talk switch, read from its USB serial port: stands in for Detector.
+    step() ignores the audio and returns 'press' / 'release' as the TX-26 reports them, except that
+    a press only counts once it has lasted MIN_HOLD: shorter flickers (a lever switch fluttering, a
+    loose joint) are dropped whole, since in tap mode each one would start and stop a recording."""
+
+    MIN_HOLD = 0.05
+
+    def __init__(self, port, gain):
+        import queue
+        import termios
+        import threading
+        self.fd = os.open(port, os.O_RDWR | os.O_NOCTTY)
+        mode = termios.tcgetattr(self.fd)
+        mode[3] &= ~(termios.ICANON | termios.ECHO)               # raw lines, no echo back
+        termios.tcsetattr(self.fd, termios.TCSANOW, mode)
+        os.write(self.fd, f"GAIN {gain}\n".encode())
+        self.held, self.pending, self.events = False, None, queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        buf = b""
+        while True:
+            try:
+                chunk = os.read(self.fd, 256)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                self.events.put("gone")
+                return
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if line.strip() in (b"PTT 1", b"PTT 0"):
+                    self.events.put(line.strip())
+
+    def step(self, hop):
+        import queue
+        now = time.monotonic()
+        try:
+            ev = self.events.get_nowait()
+        except queue.Empty:
+            ev = None
+        if ev == "gone":
+            raise EOFError("the TX-26 was unplugged")
+        if ev == b"PTT 1" and not self.held and self.pending is None:
+            self.pending = now
+        elif ev == b"PTT 0":
+            if self.pending is not None:        # let go before it counted: a flicker, drop it
+                self.pending = None
+            elif self.held:
+                self.held = False
+                return "release"
+        if self.pending is not None and now - self.pending >= self.MIN_HOLD:
+            self.pending, self.held = None, True
+            return "press"
+        return None
+
+
 def calibrate(read, seconds):
     levels = []
     for _ in range(int(seconds * RATE / HOP)):
@@ -261,6 +346,11 @@ def single_instance():
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--key", default="KEY_SPACE")
+    ap.add_argument("--input", choices=("auto", "tx26", "micfx"), default="auto",
+                    help="tx26: the TX-26 USB mic, its switch read over USB serial; micfx: the MicFX on the USB "
+                         "sound card, its button heard in the audio; auto: the TX-26 when it's plugged in")
+    ap.add_argument("--tx26-port", help="the TX-26's serial port (default: found by its USB name)")
+    ap.add_argument("--mic-gain", type=int, default=44, help="TX-26 mic preamp, 0-63 dB")
     ap.add_argument("--source", default="usb-C-Media",
                     help="record from the PipeWire source whose name contains this")
     ap.add_argument("--gain", type=int, default=22,
@@ -309,13 +399,30 @@ def main():
         clock = lambda: f"{pos[0] / RATE:7.3f}s"
         args.dry_run = True
     else:
-        source, card = usb_source(args.source)
-        setup_mixer(card, args.gain)
-        print(f"recording from {source}", flush=True)
-        rec = subprocess.Popen(["parecord", f"--device={source}", "--raw", "--format=s16le", f"--rate={RATE}", "--channels=1",
-                                "--latency-msec=10"], stdout=subprocess.PIPE)
+        port = args.tx26_port or (tx26_port() if args.input != "micfx" else None)
+        if args.input == "tx26" and not port:
+            sys.exit("no TX-26 found - is it plugged in?")
+        switch = Switch(port, args.mic_gain) if port else None
+        source = None
+        if switch:
+            print(f"TX-26 on {port}: its switch is read over USB (mic gain {args.mic_gain} dB)", flush=True)
+            source = tx26_source()
+            if source and not args.dry_run and not args.transcribe:
+                subprocess.run(["pactl", "set-default-source", source], check=False)
+                print(f"made the TX-26 the default mic, for Claude Code's voice mode: {source}", flush=True)
+        else:
+            source, card = usb_source(args.source)
+            setup_mixer(card, args.gain)
+        rec = None
+        if not switch or args.transcribe:
+            print(f"recording from {source}", flush=True)
+            rec = subprocess.Popen(["parecord", f"--device={source}", "--raw", "--format=s16le", f"--rate={RATE}",
+                                    "--channels=1", "--latency-msec=10"], stdout=subprocess.PIPE)
 
         def read():
+            if rec is None:         # the TX-26 in Claude mode: only its switch matters, Claude records itself
+                time.sleep(HOP / RATE)
+                return np.zeros(HOP)
             return np.frombuffer(rec.stdout.read(HOP * 2), dtype=np.int16).astype(float) / 32768
         clock = lambda: time.strftime("%H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
 
@@ -367,27 +474,32 @@ def main():
             send(False)
         if not (args.file or args.dry_run) and ttsd:
             ttsd.terminate()
-        if not args.file:
+        if not args.file and rec:
             rec.terminate()     # else parecord outlives us and writes errors into the (next) log
         sys.exit(0)
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    print(f"calibrating for {args.calibrate}s - keep the button released...", flush=True)
-    try:
-        floor = calibrate(read, args.calibrate)
-    except EOFError:
-        sys.exit(f"the recording is shorter than the {args.calibrate}s calibration")
-    if floor > -60:
-        print(f"warning: the floor measured {floor:.1f} dB - was Transmit held? restart with it released", flush=True)
+    if args.file or not switch:
+        print(f"calibrating for {args.calibrate}s - keep the button released...", flush=True)
+        try:
+            floor = calibrate(read, args.calibrate)
+        except EOFError:
+            sys.exit(f"the recording is shorter than the {args.calibrate}s calibration")
+        if floor > -60:
+            print(f"warning: the floor measured {floor:.1f} dB - was Transmit held? restart with it released", flush=True)
     if args.transcribe:
         print("transcribe mode: speech is pasted into the focused window" + (" and sent" if args.enter else ""), flush=True)
     else:
         print(f"{'tap' if args.tap else 'hold'} mode (Claude Code voice mode must match: /voice {'tap' if args.tap else 'hold'})",
               flush=True)
-    print(f"noise floor {floor:.1f} dB; listening (release on cut-off or {args.hang}s silence)", flush=True)
-    det = Detector(args, floor)
+    if args.file or not switch:
+        print(f"noise floor {floor:.1f} dB; listening (release on cut-off or {args.hang}s silence)", flush=True)
+        det, loud = Detector(args, floor), floor + args.margin
+    else:
+        print("listening to the TX-26's switch", flush=True)
+        det, loud = switch, TX26_LOUD_DB
     stt = Transcriber(args, kb) if args.transcribe else None
     preroll = int(0.1 * RATE / HOP)             # keep 100 ms before the press
     hops = []
@@ -400,9 +512,11 @@ def main():
                 send(ev == "press")
                 print(f"{clock()} {ev.upper():7s} {'' if stt else args.key}", flush=True)
                 if ev == "release" and stt:
-                    stt.add(voiced_clip(hops, floor + args.margin, args.min_clip))
+                    stt.add(voiced_clip(hops, loud, args.min_clip))
                     hops = []
-    except EOFError:
+    except EOFError as e:
+        if str(e):
+            print(e, flush=True)
         stop()
 
 
