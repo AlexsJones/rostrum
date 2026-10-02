@@ -9,13 +9,13 @@
 //   LEVEL 0.123        the mic's peak level over the last 250 ms, 0..1 (switch held or not)
 // Commands it takes (one per line):
 //   GAIN 44            set the mic preamp, 0..63 dB (answers GAIN 44); lost at power-off
-// Wiring: switch between pin 2 and pin 3 (pin 3 is driven low, standing in for GND),
-//         lamp: pin 4 -> 330R -> LED -> GND (glows dimly when on, bright while transmitting),
+// Wiring: switch between pin 4 and pin 3 (pin 3 is driven low, standing in for GND),
+//         lamp: pin 2 -> 330R -> LED -> GND (glows dimly when on, bright while transmitting),
 //         capsule on the adaptor's MIC and GND pads.
 #include <Audio.h>
 #include <Bounce.h>
 
-const int PTT_PIN = 2, PTT_GND_PIN = 3, LAMP_PIN = 4;
+const int PTT_PIN = 4, PTT_GND_PIN = 3, LAMP_PIN = 2;
 const int MIC_GAIN = 44;             // dB, 0..63: speech peaked at 0.02 (-34 dB) with 24; aim for about 0.25
 
 AudioInputI2S        mic;            // from the adaptor's SGTL5000
