@@ -85,7 +85,7 @@ Or from a terminal:
 .venv/bin/python ptt.py --transcribe --enter     # ... and press Enter to send it
 .venv/bin/python ptt.py --no-tts                 # don't load the text-to-speech voice
 .venv/bin/python ptt.py --dry-run                # print presses/releases, touch nothing
-.venv/bin/python ptt.py --file usb_button.wav    # replay a recording through the detector
+.venv/bin/python ptt.py --file recording.wav     # replay a 48 kHz mono recording through the detector
 ```
 
 Only one copy runs at a time; starting another stops the first.
@@ -122,11 +122,12 @@ can use it by sending `{"cmd": "say", "text": "..."}` to the Unix socket
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-They replay the recorded sessions (`usb_live.wav`, `usb_button.wav`) through `ptt.py` exactly as
-it runs live: where each press and release lands, releasing after you've stopped talking, fast
-speech not counting as a release, silence never pressing, word-for-word transcription, and the
-settings window never cutting off dictation. They run on every push and pull request.
-`ROSTRUM_SKIP_WHISPER=1` skips the transcription test.
+The MicFX tests replay recorded sessions (`usb_live.wav`, `usb_button.wav`) through `ptt.py`
+exactly as it runs live: where each press and release lands, releasing after you've stopped talking,
+fast speech not counting as a release, silence never pressing, and word-for-word transcription. The
+recordings are voice, so they're kept out of the repo: put them in `tests/recordings/` (git-ignored)
+to run those tests; without them they're skipped. The TX-26 and settings-window tests always run,
+on every push and pull request. `ROSTRUM_SKIP_WHISPER=1` skips the transcription test.
 
 ## Tuning for other hardware
 

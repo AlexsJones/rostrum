@@ -4,6 +4,9 @@ Regression tests: replay the recorded MicFX sessions through ptt.py exactly as i
   .venv/bin/python -m unittest discover -s tests -v
   ROSTRUM_SKIP_WHISPER=1 ...     # skip the transcription test (it downloads Whisper base.en once)
 
+The recordings are voice, so they aren't in the repo: put them in tests/recordings/ (git-ignored).
+Without them the MicFX detector and transcription tests are skipped; the rest still run.
+
 usb_live.wav   hold+speak+release while talking (4.2-7.6 s); hold+speak, stop talking, then
                release (9.7-16.9 s); three quick taps (19.3-20.3 s)
 usb_button.wav hold+speak (9.55-14.88 s); a long hold (17.6-31.7 s); four quick taps
@@ -21,6 +24,9 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+REC = ROOT / "tests" / "recordings"
+HAVE_RECORDINGS = all((REC / n).exists() for n in ("usb_live.wav", "usb_button.wav"))
+NO_RECORDINGS = "the MicFX recordings aren't in tests/recordings/ (they're voice, kept out of the repo)"
 PY = sys.executable
 CUT_CONFIRM = 0.3       # ptt.py --cut-confirm default: a release lands this long after the cut-off
 TOL = 0.03
@@ -34,7 +40,7 @@ def run(wav, *args):
 
 
 def load(name):
-    with wave.open(str(ROOT / name)) as w:
+    with wave.open(str(REC / name)) as w:
         return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).copy()
 
 
@@ -50,11 +56,12 @@ def between(events, start, end):
     return [e for e in events if start <= e[0] <= end]
 
 
+@unittest.skipUnless(HAVE_RECORDINGS, NO_RECORDINGS)
 class Detector(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.live, _ = run(ROOT / "usb_live.wav")
-        cls.button, _ = run(ROOT / "usb_button.wav")
+        cls.live, _ = run(REC / "usb_live.wav")
+        cls.button, _ = run(REC / "usb_button.wav")
 
     def assertAt(self, event, kind, t):
         self.assertEqual(event[1], kind)
@@ -118,9 +125,10 @@ class Detector(unittest.TestCase):
 
 
 @unittest.skipIf(os.environ.get("ROSTRUM_SKIP_WHISPER"), "ROSTRUM_SKIP_WHISPER set")
+@unittest.skipUnless(HAVE_RECORDINGS, NO_RECORDINGS)
 class Transcribe(unittest.TestCase):
     def test_sentences_word_for_word_and_taps_skipped(self):
-        _, out = run(ROOT / "usb_live.wav", "--transcribe")
+        _, out = run(REC / "usb_live.wav", "--transcribe")
         texts = re.findall(r"\(\d+\.\ds\) (['\"])(.*)\1$", out, re.M)
         self.assertEqual([t[1].lower().rstrip(".") for t in texts], [
             "this is me saying a sentence and letting go",
