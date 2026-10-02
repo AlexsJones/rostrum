@@ -101,8 +101,11 @@ def tx26_port():
 
 
 def tx26_source():
-    """The TX-26 microphone's PipeWire source, or None."""
-    out = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True).stdout
+    """The TX-26 microphone's PipeWire source, or None (also when pactl isn't installed)."""
+    try:
+        out = subprocess.run(["pactl", "list", "short", "sources"], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return None
     return next((l.split("\t")[1] for l in out.splitlines() if ".monitor" not in l and
                  any(n.replace(" ", "_").replace("/", "_") in l for n in TX26_NAMES)), None)
 
