@@ -98,18 +98,22 @@ def main():
     try:
         while True:
             conn, _ = srv.accept()
+            # A client that hangs up early (the app's ping gives up after 0.2 s) must never take the
+            # service down: that silently stopped every reply being read aloud.
             with conn:
                 try:
                     msg = json.loads(conn.makefile().readline() or "{}")
-                except json.JSONDecodeError:
+                    if msg.get("cmd") != "ping":    # the app pings twice a second; don't log those
+                        print(time.strftime("%H:%M:%S"), msg.get("cmd"), repr(msg.get("text", ""))[:60],
+                              flush=True)
+                    if msg.get("cmd") == "say":
+                        speaker.say(msg.get("text", ""))
+                    elif msg.get("cmd") == "stop":
+                        speaker.stop()
+                    elif msg.get("cmd") == "ping":
+                        conn.sendall(b"pong\n")
+                except (ValueError, OSError):       # bad JSON / bytes, or the client already went
                     continue
-                print(time.strftime("%H:%M:%S"), msg.get("cmd"), repr(msg.get("text", ""))[:60], flush=True)
-                if msg.get("cmd") == "say":
-                    speaker.say(msg.get("text", ""))
-                elif msg.get("cmd") == "stop":
-                    speaker.stop()
-                elif msg.get("cmd") == "ping":
-                    conn.sendall(b"pong\n")
     finally:
         speaker.stop()
         srv.close()

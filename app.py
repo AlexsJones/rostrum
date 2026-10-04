@@ -21,9 +21,9 @@ from ptt import setup_mixer, tx26_port, usb_card  # noqa: E402
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QIcon, QTextCursor
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFormLayout, QGroupBox,
-                               QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QPushButton, QRadioButton,
-                               QSpinBox, QSystemTrayIcon, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QMenu, QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon,
+                               QTabWidget, QVBoxLayout, QWidget)
 
 HERE = Path(__file__).resolve().parent
 PYTHON = HERE / ".venv" / "bin" / "python"
@@ -43,7 +43,14 @@ WHISPER_MODELS = {
     "small.en": "~2 s a sentence, more accurate",
     "medium.en": "slow on CPU, most accurate English",
 }
-DEFAULTS = {"backend": "claude", "whisper_model": "base.en", "send_enter": False, "tts": True, "gain": 22}
+# push-to-talk targets, in tab order. Generic and OpenCode both transcribe locally and paste; each keeps
+# its own Whisper model and Enter setting (OpenCode sends by default: its prompt is the only place it goes).
+TARGETS = {"claude": "Claude Code", "generic": "Generic", "opencode": "OpenCode"}
+DEFAULTS = {"backend": "claude", "whisper_model": "base.en", "send_enter": False,
+            "opencode_whisper_model": "base.en", "opencode_enter": True, "tts": True, "gain": 22}
+# per transcribing target: (its Whisper model key, its Enter key) in the config
+WHISPER_KEYS = {"generic": ("whisper_model", "send_enter"),
+                "opencode": ("opencode_whisper_model", "opencode_enter")}
 
 # where the text-to-speech hook can be wired up: (agent, config file)
 TTS_HOOKS = [("Claude Code", CLAUDE_SETTINGS),
@@ -104,8 +111,9 @@ def engine_holding():
 
 def engine_args(cfg):
     args = [str(PYTHON), str(HERE / "ptt.py"), "--gain", str(cfg["gain"])]
-    if cfg["backend"] == "generic":
-        args += ["--transcribe", "--whisper-model", cfg["whisper_model"]] + (["--enter"] if cfg["send_enter"] else [])
+    if cfg["backend"] in WHISPER_KEYS:
+        model, enter = WHISPER_KEYS[cfg["backend"]]
+        args += ["--transcribe", "--whisper-model", cfg[model]] + (["--enter"] if cfg[enter] else [])
     if not cfg["tts"]:
         args.append("--no-tts")
     return args
@@ -127,11 +135,46 @@ def stop_engine():
             pass
 
 
-def claude_voice_mode():
+def mtime(path):
     try:
-        return json.loads(CLAUDE_SETTINGS.read_text())["voice"]["mode"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return "hold"
+        return path.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def claude_settings():
+    try:
+        return json.loads(CLAUDE_SETTINGS.read_text())
+    except OSError:
+        return {}
+
+
+def write_claude_settings(cfg):
+    CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    CLAUDE_SETTINGS.write_text(json.dumps(cfg, indent=2) + "\n")
+
+
+def claude_voice():
+    """Claude Code's dictation settings (/voice): enabled, mode ('hold' or 'tap'), autoSubmit."""
+    try:
+        voice = claude_settings().get("voice")
+    except ValueError:
+        return {}
+    return voice if isinstance(voice, dict) else {}
+
+
+def set_claude_voice(**changes):
+    """Change keys of the "voice" object in ~/.claude/settings.json, leaving everything else as it was."""
+    cfg = claude_settings()
+    if not isinstance(cfg.get("voice"), dict):
+        cfg["voice"] = {}
+    cfg["voice"].update(changes)
+    write_claude_settings(cfg)
+
+
+def claude_voice_mode():
+    mode = claude_voice().get("mode")
+    return mode if mode in ("hold", "tap") else "hold"
 
 
 def whisper_downloaded(name):
@@ -161,10 +204,7 @@ def claude_hook():
 
 def set_claude_hook(on):
     """Add (or remove) the Stop hook in ~/.claude/settings.json; any older speak.py hook is replaced."""
-    try:
-        cfg = json.loads(CLAUDE_SETTINGS.read_text())
-    except OSError:
-        cfg = {}
+    cfg = claude_settings()
     stops = [g for g in cfg.setdefault("hooks", {}).get("Stop", [])
              if not any("speak.py" in h.get("command", "") for h in g.get("hooks", []))]
     if on:
@@ -173,8 +213,7 @@ def set_claude_hook(on):
         cfg["hooks"]["Stop"] = stops
     else:
         cfg["hooks"].pop("Stop", None)
-    CLAUDE_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-    CLAUDE_SETTINGS.write_text(json.dumps(cfg, indent=2) + "\n")
+    write_claude_settings(cfg)
 
 
 def tts_running():
@@ -225,6 +264,7 @@ class ComboBox(NoWheel, QComboBox):
 def note(text):
     lbl = QLabel(text)
     lbl.setWordWrap(True)
+    lbl.setAlignment(Qt.AlignLeft | Qt.AlignTop)     # spare height goes below the text, not above it
     lbl.setStyleSheet("color: palette(placeholder-text);")
     return lbl
 
@@ -250,55 +290,26 @@ class Window(QWidget):
         root.addLayout(top)
         root.addWidget(note("Push-to-talk keeps running when this window is closed."))
 
-        # target
-        box = QGroupBox("Target")
-        lay = QVBoxLayout(box)
-        self.rb_claude = QRadioButton("Claude Code — drives its voice mode with the Space key")
-        self.rb_generic = QRadioButton("Generic — types what you say into the active window (terminal, browser…)")
-        self.backend = QButtonGroup(self)
-        for rb in (self.rb_claude, self.rb_generic):
-            self.backend.addButton(rb)
-            lay.addWidget(rb)
-        (self.rb_generic if self.cfg["backend"] == "generic" else self.rb_claude).setChecked(True)
-        self.backend.buttonToggled.connect(lambda *_: self.changed())
-        root.addWidget(box)
+        # one tab per target; the one push-to-talk drives is ticked, and opens first
+        self.tabs = QTabWidget()
+        self.use = {}
+        builders = {"claude": self.claude_tab, "generic": lambda: self.whisper_tab("generic"),
+                    "opencode": lambda: self.whisper_tab("opencode")}
+        for name, label in TARGETS.items():
+            self.tabs.addTab(builders[name](), label)
+        self.tabs.setCurrentIndex(list(TARGETS).index(self.cfg["backend"]))
+        root.addWidget(self.tabs)
 
-        # speech to text
-        box = QGroupBox("Speech to text")
-        form = QFormLayout(box)
-        self.stt_engine = QLabel()
-        self.stt_engine.setWordWrap(True)
-        form.addRow("Engine:", self.stt_engine)
-        self.model = ComboBox()
-        for name, desc in WHISPER_MODELS.items():
-            self.model.addItem(f"{name} — {desc}", name)
-        self.model.setCurrentIndex(max(0, self.model.findData(self.cfg["whisper_model"])))
-        self.model.currentIndexChanged.connect(lambda *_: self.changed())
-        self.model_row = QLabel("Whisper model:")
-        form.addRow(self.model_row, self.model)
-        self.model_state = note("")
-        form.addRow("", self.model_state)
-        self.enter = QCheckBox("Press Enter after the text (send it)")
-        self.enter.setChecked(self.cfg["send_enter"])
-        self.enter.toggled.connect(lambda *_: self.changed())
-        form.addRow("", self.enter)
-        root.addWidget(box)
-
-        # text to speech
+        # text to speech: one service, whichever agent it reads for
         box = QGroupBox("Text to speech")
         form = QFormLayout(box)
         self.tts_engine = QLabel()
         self.tts_engine.setWordWrap(True)
         self.tts_engine.setTextInteractionFlags(Qt.TextSelectableByMouse)
         form.addRow("Engine:", self.tts_engine)
-        wired = QHBoxLayout()
         self.tts_wired = QLabel()
         self.tts_wired.setWordWrap(True)
-        self.hook_btn = QPushButton()
-        self.hook_btn.clicked.connect(self.on_hook)
-        wired.addWidget(self.tts_wired, 1)
-        wired.addWidget(self.hook_btn)
-        form.addRow("Wired to:", wired)
+        form.addRow("Wired to:", self.tts_wired)
         self.tts_state = QLabel()
         form.addRow("Service:", self.tts_state)
         self.tts = QCheckBox("Keep the voice loaded while push-to-talk runs (replies start in ~1 s)")
@@ -341,21 +352,103 @@ class Window(QWidget):
         self.refresh_static()
         self.refresh()
 
+    # --- target tabs
+
+    def use_button(self, name):
+        """The tab's 'drive this target' button; disabled (and ticked) on the active target's tab."""
+        btn = QPushButton()
+        btn.clicked.connect(lambda: self.set_backend(name))
+        self.use[name] = btn
+        return btn
+
+    def claude_tab(self):
+        page = QWidget()
+        form = self.claude_form = QFormLayout(page)
+        form.addRow(self.use_button("claude"))
+        form.addRow(note("Transmit holds Space, Claude Code's push-to-talk key; Claude Code does the "
+                         "transcribing (audio streamed to Anthropic)."))
+        self.voice_mode = ComboBox()
+        self.voice_mode.addItem("hold: talk while Transmit is held", "hold")
+        self.voice_mode.addItem("tap: press to start, press again to send", "tap")
+        self.voice_mode.currentIndexChanged.connect(self.on_voice_mode)
+        mine = "Claude Code's own setting, in ~/.claude/settings.json (the one /voice changes). Open sessions " \
+               "pick changes up straight away."
+        self.voice_mode.setToolTip(mine)
+        form.addRow("Voice mode:", self.voice_mode)
+        self.autosubmit = QCheckBox("Send the prompt when you release Transmit")
+        self.autosubmit.toggled.connect(self.on_autosubmit)
+        self.autosubmit.setToolTip(mine)
+        form.addRow("", self.autosubmit)
+        self.autosubmit_note = note("")
+        form.addRow("", self.autosubmit_note)
+        self.voice_off = QPushButton("Voice dictation is off in Claude Code: turn it on")
+        self.voice_off.clicked.connect(lambda: (set_claude_voice(enabled=True, mode=self.voice_mode.currentData()),
+                                                self.refresh_static()))
+        form.addRow("", self.voice_off)
+        hook = QHBoxLayout()
+        self.hook_state = QLabel()
+        self.hook_state.setWordWrap(True)
+        self.hook_btn = QPushButton()
+        self.hook_btn.clicked.connect(self.on_hook)
+        hook.addWidget(self.hook_state, 1)
+        hook.addWidget(self.hook_btn)
+        form.addRow("Replies:", hook)
+        return page
+
+    def whisper_tab(self, name):
+        """Generic and OpenCode: local Whisper, pasted with Ctrl+Shift+V into the focused window."""
+        model_key, enter_key = WHISPER_KEYS[name]
+        page = QWidget()
+        form = QFormLayout(page)
+        form.addRow(self.use_button(name))
+        if name == "opencode":
+            form.addRow(note("OpenCode has no voice input of its own: Rostrum transcribes what you say with "
+                             "Whisper on this computer and pastes it into OpenCode's prompt. Keep its terminal "
+                             "focused while you talk."))
+        else:
+            form.addRow(note("Transcribed with Whisper on this computer and pasted into whatever window is "
+                             "focused when you release Transmit: Codex, a terminal, a browser."))
+        model = ComboBox()
+        for m, desc in WHISPER_MODELS.items():
+            model.addItem(f"{m} — {desc}", m)
+        model.setCurrentIndex(max(0, model.findData(self.cfg[model_key])))
+        model.currentIndexChanged.connect(lambda *_: self.changed())
+        form.addRow("Whisper model:", model)
+        state = note("")
+        form.addRow("", state)
+        enter = QCheckBox("Press Enter after the text (send it)")
+        enter.setChecked(self.cfg[enter_key])
+        enter.toggled.connect(lambda *_: self.changed())
+        form.addRow("", enter)
+        if name == "opencode":
+            form.addRow("Replies:", note("not read aloud: OpenCode isn't wired to the voice yet"))
+            self.oc_model, self.oc_model_state, self.oc_enter = model, state, enter
+        else:
+            self.model, self.model_state, self.enter = model, state, enter
+        return page
+
     # --- actions
 
     def changed(self):
         """Save the settings. Gain goes straight to the sound card; anything else restarts a running
         engine (after a pause, so clicking through a spin box doesn't thrash)."""
         before = dict(self.cfg)
-        self.cfg.update(backend="generic" if self.rb_generic.isChecked() else "claude",
-                        whisper_model=self.model.currentData(), send_enter=self.enter.isChecked(),
+        self.cfg.update(whisper_model=self.model.currentData(), send_enter=self.enter.isChecked(),
+                        opencode_whisper_model=self.oc_model.currentData(),
+                        opencode_enter=self.oc_enter.isChecked(),
                         tts=self.tts.isChecked(), gain=self.gain.value())
         save_config(self.cfg)
         self.refresh_static()
         if self.cfg["gain"] != before["gain"]:
             setup_mixer(usb_card(), self.cfg["gain"])
-        if engine_pid() and any(self.cfg[k] != before[k] for k in self.cfg if k != "gain"):
+        if engine_pid() and self.engine_settings(before) != self.engine_settings(self.cfg):
             self.restart_timer.start()
+
+    @staticmethod
+    def engine_settings(cfg):
+        """What the running engine was started with: only these need a restart (an inactive tab's don't)."""
+        keys = ["backend", "tts"] + list(WHISPER_KEYS.get(cfg["backend"], ()))
+        return {k: cfg[k] for k in keys}
 
     def restart(self):
         """Never mid-sentence: stopping the engine while Transmit is down would cut off the dictation."""
@@ -379,7 +472,29 @@ class Window(QWidget):
         QTimer.singleShot(300, self.refresh)
 
     def set_backend(self, name):
-        (self.rb_generic if name == "generic" else self.rb_claude).setChecked(True)
+        """Make `name` the target push-to-talk drives (its tab's button, or the tray menu)."""
+        if name == self.cfg["backend"]:
+            return
+        self.cfg["backend"] = name
+        save_config(self.cfg)
+        self.tabs.setCurrentIndex(list(TARGETS).index(name))
+        self.refresh_static()
+        if engine_pid():
+            self.restart_timer.start()
+
+    def on_voice_mode(self, *_):
+        mode = self.voice_mode.currentData()
+        if mode == claude_voice_mode() and claude_voice().get("enabled", False):
+            return
+        set_claude_voice(mode=mode, enabled=True)
+        self.refresh_static()
+        if engine_pid() and self.cfg["backend"] == "claude":   # the engine reads the mode when it starts
+            self.restart_timer.start()
+
+    def on_autosubmit(self, on):
+        if on != bool(claude_voice().get("autoSubmit")):
+            set_claude_voice(autoSubmit=on)     # Claude Code reloads it live; no restart needed
+        self.refresh_static()
 
     def on_hook(self):
         set_claude_hook(claude_hook() != SPEAK_HOOK)
@@ -392,18 +507,19 @@ class Window(QWidget):
     # --- display
 
     def refresh_static(self):
-        generic = self.cfg["backend"] == "generic"
-        if generic:
-            self.stt_engine.setText("Whisper (faster-whisper), on this computer. "
-                                    "Pasted into the focused window with Ctrl+Shift+V when you release Transmit.")
-        else:
-            self.stt_engine.setText(f"Claude Code's built-in dictation (audio streamed to Anthropic). "
-                                    f"Voice mode: {claude_voice_mode()} — push-to-talk follows it.")
-        for w in (self.model_row, self.model, self.model_state, self.enter):
-            w.setVisible(generic)
-        name = self.cfg["whisper_model"]
-        self.model_state.setText(f"{name}: downloaded" if whisper_downloaded(name)
-                                 else f"{name}: downloads from Hugging Face on first start")
+        active = self.cfg["backend"]
+        for i, (name, label) in enumerate(TARGETS.items()):
+            self.tabs.setTabText(i, f"✓ {label}" if name == active else label)
+            self.use[name].setText("✓ Push-to-talk drives this target" if name == active
+                                   else f"Use {label} for push-to-talk")
+            self.use[name].setEnabled(name != active)
+        self.fit_tabs()
+        for name, combo, state in (("generic", self.model, self.model_state),
+                                   ("opencode", self.oc_model, self.oc_model_state)):
+            m = combo.currentData()
+            state.setText(f"{m}: downloaded" if whisper_downloaded(m)
+                          else f"{m}: downloads from Hugging Face on first start")
+        self.sync_claude()
 
         t = tts_info()
         size = f"{t['size'] / 1e6:.0f} MB" if t["size"] else "downloads (~350 MB) the first time the voice starts"
@@ -413,20 +529,45 @@ class Window(QWidget):
         wired = [w for w in t["wired"] if w != "Claude Code"]
         if hook == SPEAK_HOOK:
             wired.insert(0, "Claude Code (reply hook)")
-            self.hook_btn.setText("Disconnect Claude Code")
+            self.hook_state.setText("read aloud when Claude finishes")
+            self.hook_btn.setText("Disconnect")
         elif hook:
             wired.insert(0, "Claude Code (reply hook, via an older install)")
-            self.hook_btn.setText("Update Claude Code hook")
+            self.hook_state.setText("read aloud, through an older install's hook")
+            self.hook_btn.setText("Update hook")
         else:
-            self.hook_btn.setText("Connect Claude Code")
+            self.hook_state.setText("not read aloud")
+            self.hook_btn.setText("Read replies aloud")
         self.tts_wired.setText(", ".join(wired) or "nothing — replies aren't read aloud")
         mic = usb_mic()
         self.mic.setText(mic or "no TX-26 or USB sound card found — plug one in and restart")
 
+    def sync_claude(self):
+        """Show Claude Code's voice settings as they are now: /voice in Claude changes them too."""
+        voice = claude_voice()
+        self.claude_mtime = mtime(CLAUDE_SETTINGS)
+        for w in (self.voice_mode, self.autosubmit):
+            w.blockSignals(True)
+        self.voice_mode.setCurrentIndex(max(0, self.voice_mode.findData(claude_voice_mode())))
+        tap = claude_voice_mode() == "tap"
+        self.autosubmit.setChecked(tap or bool(voice.get("autoSubmit")))
+        self.autosubmit.setEnabled(not tap)
+        for w in (self.voice_mode, self.autosubmit):
+            w.blockSignals(False)
+        self.autosubmit_note.setText(
+            "Tap mode always sends prompts of three words or more." if tap else
+            "Only prompts of three words or more: shorter ones wait for Enter (Claude Code's limit).")
+        self.claude_form.setRowVisible(self.voice_off, not voice.get("enabled"))   # no gap when hidden
+
     def refresh(self):
+        if mtime(CLAUDE_SETTINGS) != self.claude_mtime:
+            self.refresh_static()
         pid = engine_pid()
         if pid:
-            label = "Claude Code" if self.cfg["backend"] == "claude" else f"Generic ({self.cfg['whisper_model']})"
+            backend = self.cfg["backend"]
+            label = TARGETS[backend]
+            if backend in WHISPER_KEYS:
+                label += f" ({self.cfg[WHISPER_KEYS[backend][0]]})"
             self.status.setText(f"<b style='color:#2e9d4b'>●</b> <b>Running</b> — {label}")
             self.toggle.setText("Stop")
         else:
@@ -448,6 +589,26 @@ class Window(QWidget):
         if tray:
             tray.update(bool(pid), self.cfg["backend"])
 
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.fit_tabs()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, self.fit_tabs)     # once laid out: before that the pages have no width
+
+    def fit_tabs(self):
+        """Tabs don't grow for wrapped text (Qt ignores height-for-width there), so the notes would be cut
+        off: measure every page at the width it has now and keep the tabs at least that tall. A short
+        window then squeezes the activity log instead."""
+        frame = self.tabs.style().pixelMetric(self.tabs.style().PixelMetric.PM_DefaultFrameWidth)
+        page = self.tabs.currentWidget()
+        width = page.width() if page.width() > 100 else self.tabs.width() - 2 * frame
+        if width <= 100:
+            return                              # not laid out yet; showEvent measures again
+        tallest = max(self.tabs.widget(i).layout().totalHeightForWidth(width) for i in range(self.tabs.count()))
+        self.tabs.setMinimumHeight(tallest + self.tabs.tabBar().sizeHint().height() + 2 * frame)
+
     def closeEvent(self, ev):
         if getattr(self, "tray", None):     # with a tray icon, closing just hides the window
             ev.ignore()
@@ -463,12 +624,12 @@ class Tray(QSystemTrayIcon):
         self.state.setEnabled(False)
         self.toggle = menu.addAction("", win.on_toggle)
         menu.addSeparator()
-        self.claude = QAction("Target: Claude Code", menu, checkable=True)
-        self.generic = QAction("Target: Generic", menu, checkable=True)
-        self.claude.triggered.connect(lambda: win.set_backend("claude"))
-        self.generic.triggered.connect(lambda: win.set_backend("generic"))
-        menu.addAction(self.claude)
-        menu.addAction(self.generic)
+        self.targets = {}
+        for name, label in TARGETS.items():
+            act = QAction(f"Target: {label}", menu, checkable=True)
+            act.triggered.connect(lambda _=False, n=name: win.set_backend(n))
+            menu.addAction(act)
+            self.targets[name] = act
         menu.addSeparator()
         menu.addAction("Settings…", self.show_win)
         menu.addAction("Quit (push-to-talk keeps running)", QApplication.quit)
@@ -484,8 +645,8 @@ class Tray(QSystemTrayIcon):
     def update(self, running, backend):
         self.state.setText("Running" if running else "Stopped")
         self.toggle.setText("Stop" if running else "Start")
-        self.claude.setChecked(backend == "claude")
-        self.generic.setChecked(backend == "generic")
+        for name, act in self.targets.items():
+            act.setChecked(name == backend)
         self.setToolTip(f"Rostrum — {'running' if running else 'stopped'}")
 
 
