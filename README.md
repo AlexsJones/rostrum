@@ -8,8 +8,11 @@ hand-held microphone. Hold the button, speak, let go:
 - **Generic** target: transcribes locally with Whisper and pastes the text into whatever
   window is active: OpenCode, Codex, a terminal, a browser.
 
-A small control app (**Rostrum** in the app menu) starts/stops it, switches the target, and
-shows which speech-to-text and text-to-speech models are loaded and where they're wired up.
+- **OpenCode** target: the same local transcription, pasted into OpenCode's prompt and sent.
+
+A small control app (**Rostrum** in the app menu) starts/stops it and has a tab for each target
+with that target's settings, plus the speech-to-text and text-to-speech models and where
+they're wired up.
 
 ## Hardware
 
@@ -76,6 +79,17 @@ To build the RPM yourself: `podman run --rm -v "$PWD":/src:Z -w /src fedora:44 p
 Open **Rostrum** from the app menu and press **Start**. Keep Transmit released for the first
 second and a half while it measures the idle line. Push-to-talk keeps running after the window
 is closed.
+
+Each target has a tab; the ticked one is the target push-to-talk drives, and **Use … for
+push-to-talk** on another tab switches to it (the tray menu does too).
+
+- **Claude Code**: the voice mode (hold or tap) and **Send the prompt when you release
+  Transmit** are Claude Code's own settings (`voice.mode` and `voice.autoSubmit` in
+  `~/.claude/settings.json`, the same ones `/voice` changes), so open sessions pick them up
+  straight away. Claude Code only auto-sends prompts of three words or more; shorter ones wait
+  for Enter. Tap mode always sends. **Read replies aloud** adds the speech hook.
+- **Generic** and **OpenCode**: each has its own Whisper model and **Press Enter after the
+  text**, which OpenCode has on by default.
 
 Or from a terminal:
 

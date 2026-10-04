@@ -9,11 +9,13 @@ usb_live.wav   hold+speak+release while talking (4.2-7.6 s); hold+speak, stop ta
 usb_button.wav hold+speak (9.55-14.88 s); a long hold (17.6-31.7 s); four quick taps
 Times below are where the sound starts / cuts off in the recordings.
 """
+import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -173,9 +175,13 @@ class App(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         tmp = Path(self.tmp.name)
-        self.patched = {n: getattr(self.app, n) for n in ("CONFIG", "LOG", "setup_mixer", "engine_pid", "start_engine")}
+        self.patched = {n: getattr(self.app, n)
+                        for n in ("CONFIG", "LOG", "CLAUDE_SETTINGS", "setup_mixer", "engine_pid", "start_engine")}
         self.mixer, self.starts = [], []
         self.app.CONFIG, self.app.LOG = tmp / "config.json", tmp / "ptt.log"
+        self.app.CLAUDE_SETTINGS = tmp / "claude-settings.json"     # never the real ~/.claude/settings.json
+        self.app.CLAUDE_SETTINGS.write_text(json.dumps(
+            {"voice": {"enabled": True, "mode": "hold"}, "hooks": {"Stop": []}, "model": "opus"}))
         self.app.setup_mixer = lambda card, gain: self.mixer.append(gain)
         self.app.engine_pid = lambda: 1234
         self.app.start_engine = lambda cfg: self.starts.append(cfg["backend"])
@@ -217,6 +223,87 @@ class App(unittest.TestCase):
         self.app.LOG.write_text("10:00:00.000 PRESS   KEY_SPACE\n10:00:04.000 RELEASE KEY_SPACE\n")
         self.win.restart()
         self.assertEqual(len(self.starts), 1)
+
+    def claude(self):
+        return json.loads(self.app.CLAUDE_SETTINGS.read_text())
+
+    def test_auto_send_is_claude_codes_setting_and_needs_no_restart(self):
+        self.win.autosubmit.setChecked(True)
+        self.assertEqual(self.claude()["voice"], {"enabled": True, "mode": "hold", "autoSubmit": True})
+        self.assertEqual(self.claude()["model"], "opus")          # the rest of the file is left alone
+        self.assertFalse(self.win.restart_timer.isActive())
+        self.win.autosubmit.setChecked(False)
+        self.assertIs(self.claude()["voice"]["autoSubmit"], False)
+
+    def test_tap_mode_always_sends(self):
+        self.win.voice_mode.setCurrentIndex(self.win.voice_mode.findData("tap"))
+        self.assertEqual(self.claude()["voice"]["mode"], "tap")
+        self.assertTrue(self.win.autosubmit.isChecked())
+        self.assertFalse(self.win.autosubmit.isEnabled())
+
+    def test_voice_mode_restarts_the_engine_driving_claude(self):
+        self.win.set_backend("claude")
+        self.win.restart_timer.stop()
+        self.win.voice_mode.setCurrentIndex(self.win.voice_mode.findData("tap"))
+        self.assertTrue(self.win.restart_timer.isActive())
+
+    def test_voice_changed_in_claude_code_shows_up(self):
+        cfg = self.claude()
+        cfg["voice"]["autoSubmit"] = True
+        self.app.CLAUDE_SETTINGS.write_text(json.dumps(cfg))
+        os.utime(self.app.CLAUDE_SETTINGS, ns=(1, 1))              # a different mtime, however fast the test runs
+        self.win.refresh()
+        self.assertTrue(self.win.autosubmit.isChecked())
+
+    def test_opencode_transcribes_and_sends(self):
+        self.win.set_backend("opencode")
+        args = self.app.engine_args(self.win.cfg)
+        self.assertIn("--transcribe", args)
+        self.assertIn("--enter", args)
+        self.assertEqual(self.win.tabs.currentIndex(), list(self.app.TARGETS).index("opencode"))
+
+    def test_an_inactive_tab_never_restarts_the_engine(self):
+        self.win.set_backend("claude")
+        self.win.restart_timer.stop()
+        self.win.oc_enter.setChecked(not self.win.oc_enter.isChecked())
+        self.win.model.setCurrentIndex((self.win.model.currentIndex() + 1) % self.win.model.count())
+        self.assertFalse(self.win.restart_timer.isActive())
+
+
+class SpeechService(unittest.TestCase):
+    """Seen live: the app's ping hung up before the pong, ttsd died, and replies stopped being read aloud."""
+
+    def test_a_client_hanging_up_early_does_not_stop_the_service(self):
+        import socket
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        sock = Path(tmp.name) / "tts.sock"
+        # ttsd as it runs, on a scratch socket, with a silent speaker instead of the Kokoro model
+        stub = (f"import sys; sys.path.insert(0, {str(ROOT / 'tts')!r}); import ttsd, pathlib; "
+                f"ttsd.SOCK = pathlib.Path({str(sock)!r}); "
+                "ttsd.Speaker = lambda: type('Silent', (), {'say': lambda *a: None, 'stop': lambda *a: None})(); "
+                "ttsd.main()")
+        proc = subprocess.Popen([PY, "-c", stub], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(proc.kill)
+        for _ in range(500):
+            if sock.exists():
+                break
+            time.sleep(0.02)
+
+        def ping(read=True):
+            with socket.socket(socket.AF_UNIX) as s:
+                s.connect(str(sock))
+                s.sendall(b'{"cmd": "ping"}\n')
+                if not read:        # hang up at once, resetting the connection, before ttsd answers
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+                    return None
+                s.settimeout(2)
+                return s.recv(16)
+
+        for _ in range(50):
+            ping(read=False)
+        self.assertIsNone(proc.poll(), "ttsd died")
+        self.assertEqual(ping(), b"pong\n")
 
 
 if __name__ == "__main__":
