@@ -266,6 +266,7 @@ def claude_voice_mode():
 
 
 LOCK = Path.home() / ".cache" / "rostrum" / "lock"
+LEVEL = Path.home() / ".cache" / "rostrum" / "level"    # live mic level for the app's meter: "<rms> <floor>"
 ENGINE = Path(__file__).resolve()
 TTS_DIR = ENGINE.parent / "tts"
 
@@ -398,6 +399,7 @@ def main():
             return h
         clock = lambda: f"{pos[0] / RATE:7.3f}s"
         args.dry_run = True
+        rec = None          # file replay has no live mic to meter
     else:
         port = args.tx26_port or (tx26_port() if args.input != "micfx" else None)
         if args.input == "tx26" and not port:
@@ -476,11 +478,13 @@ def main():
             ttsd.terminate()
         if not args.file and rec:
             rec.terminate()     # else parecord outlives us and writes errors into the (next) log
+        LEVEL.unlink(missing_ok=True)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
+    floor = -60.0       # default until measured; also the meter's silence reference in TX-26 modes
     if args.file or not switch:
         print(f"calibrating for {args.calibrate}s - keep the button released...", flush=True)
         try:
@@ -503,9 +507,16 @@ def main():
     stt = Transcriber(args, kb) if args.transcribe else None
     preroll = int(0.1 * RATE / HOP)             # keep 100 ms before the press
     hops = []
+    meter_at, meter_peak = 0.0, floor          # throttle the level file, and hold a short-term peak
     try:
         while True:
             hop = read()
+            if rec is not None:                 # live mic level for the app's meter (not in Claude's TX-26 mode)
+                meter_peak = max(meter_peak, 20 * np.log10(hop.std() + 1e-9))
+                now = time.monotonic()
+                if now - meter_at >= 0.1:
+                    LEVEL.write_text(f"{meter_peak:.1f} {floor:.1f}")
+                    meter_at, meter_peak = now, floor
             ev = det.step(hop)
             hops = (hops + [hop]) if det.held or ev == "release" else (hops + [hop])[-preroll:]
             if ev:

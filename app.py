@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "tts"))
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "tts"))
 from ptt import setup_mixer, tx26_port, usb_card  # noqa: E402
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction, QIcon, QTextCursor
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QTextCursor
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout, QGroupBox, QHBoxLayout,
                                QLabel, QMenu, QPlainTextEdit, QPushButton, QSpinBox, QSystemTrayIcon,
                                QTabWidget, QVBoxLayout, QWidget)
@@ -31,6 +32,7 @@ ICON = HERE / "icons" / "rostrum.svg"
 CONFIG = Path.home() / ".config" / "rostrum" / "config.json"
 LOG = Path.home() / ".cache" / "rostrum" / "ptt.log"
 LOCK = Path.home() / ".cache" / "rostrum" / "lock"          # holds the running ptt.py's pid
+LEVEL = Path.home() / ".cache" / "rostrum" / "level"        # ptt.py's live mic level, for the meter
 TTS_DIR = HERE / "tts"
 TTS_SOCK = Path.home() / ".cache" / "rostrum" / "tts.sock"
 TTS_MUTED = Path.home() / ".config" / "rostrum" / "muted"
@@ -47,7 +49,8 @@ WHISPER_MODELS = {
 # its own Whisper model and Enter setting (OpenCode sends by default: its prompt is the only place it goes).
 TARGETS = {"claude": "Claude Code", "generic": "Generic", "opencode": "OpenCode"}
 DEFAULTS = {"backend": "claude", "whisper_model": "base.en", "send_enter": False,
-            "opencode_whisper_model": "base.en", "opencode_enter": True, "tts": True, "gain": 22}
+            "opencode_whisper_model": "base.en", "opencode_enter": True, "tts": True, "gain": 22,
+            "source": ""}      # "" = auto (ptt.py picks the TX-26, else the USB sound card)
 # per transcribing target: (its Whisper model key, its Enter key) in the config
 WHISPER_KEYS = {"generic": ("whisper_model", "send_enter"),
                 "opencode": ("opencode_whisper_model", "opencode_enter")}
@@ -111,6 +114,8 @@ def engine_holding():
 
 def engine_args(cfg):
     args = [str(PYTHON), str(HERE / "ptt.py"), "--gain", str(cfg["gain"])]
+    if cfg["source"]:
+        args += ["--source", cfg["source"]]
     if cfg["backend"] in WHISPER_KEYS:
         model, enter = WHISPER_KEYS[cfg["backend"]]
         args += ["--transcribe", "--whisper-model", cfg[model]] + (["--enter"] if cfg[enter] else [])
@@ -239,6 +244,27 @@ def usb_mic():
     return card and f"MicFX on the USB sound card ({card})"
 
 
+def list_sources():
+    """Recordable PipeWire sources (not monitors), as (description, name) pairs for the Source picker."""
+    try:
+        out = subprocess.run(["pactl", "list", "sources"], capture_output=True, text=True, timeout=2).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    sources, name, desc = [], None, None
+    for line in out.splitlines():
+        line = line.strip()
+        if line.startswith("Name:"):
+            name, desc = line.split(":", 1)[1].strip(), None
+        elif line.startswith("Description:"):
+            desc = line.split(":", 1)[1].strip()
+        elif line.startswith('device.description = "'):
+            desc = desc or line.split('"', 2)[1]
+        if name and desc is not None and not name.endswith(".monitor"):
+            sources.append((desc, name))
+            name = desc = None     # one entry per source; wait for the next Name:
+    return sources
+
+
 class NoWheel:
     """Scrolling the window over a spin box or combo box must not change it: only once clicked into."""
 
@@ -259,6 +285,45 @@ class SpinBox(NoWheel, QSpinBox):
 
 class ComboBox(NoWheel, QComboBox):
     pass
+
+
+class LevelMeter(QWidget):
+    """A VU-style bar of the mic's recent peak: green while there's headroom, amber loud, red near
+    clipping. The noise floor is a tick, so you can raise the gain until speech sits well above it
+    without the peaks going red."""
+
+    MIN_DB, MAX_DB = -54.0, 0.0
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(200, 16)
+        self.db = self.floor = None     # None: no signal (engine stopped, or Claude records its own audio)
+
+    def show_level(self, db, floor):
+        if (db, floor) != (self.db, self.floor):
+            self.db, self.floor = db, floor
+            self.update()
+
+    def _x(self, r, db):
+        frac = max(0.0, min(1.0, (db - self.MIN_DB) / (self.MAX_DB - self.MIN_DB)))
+        return r.x() + int(r.width() * frac)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        r = self.rect().adjusted(0, 0, -1, -1)
+        p.fillRect(r, self.palette().base())
+        if self.db is None:
+            p.setPen(self.palette().placeholderText().color())
+            p.drawText(r, Qt.AlignCenter, "no signal")
+        else:
+            col = QColor("#e5484d") if self.db >= -4 else QColor("#e2a336") if self.db >= -12 else QColor("#30a46c")
+            p.fillRect(r.x(), r.y(), self._x(r, self.db) - r.x(), r.height(), col)
+            if self.floor is not None and self.floor > self.MIN_DB:
+                fx = self._x(r, self.floor)
+                p.setPen(self.palette().text().color())
+                p.drawLine(fx, r.y(), fx, r.y() + r.height())
+        p.setPen(self.palette().mid().color())
+        p.drawRect(r)
 
 
 def note(text):
@@ -328,6 +393,11 @@ class Window(QWidget):
         self.mic = QLabel()
         self.mic.setWordWrap(True)
         form.addRow("Input:", self.mic)
+        self.source = ComboBox()
+        self.source.currentIndexChanged.connect(lambda *_: self.changed())
+        form.addRow("Source:", self.source)
+        self.meter = LevelMeter()
+        form.addRow("Level:", self.meter)
         self.gain = SpinBox()
         self.gain.setRange(0, 35)
         self.gain.setValue(self.cfg["gain"])
@@ -349,6 +419,8 @@ class Window(QWidget):
         self.restart_timer = QTimer(self, singleShot=True, interval=600, timeout=self.restart)
         self.timer = QTimer(self, interval=500, timeout=self.refresh)
         self.timer.start()
+        self.meter_timer = QTimer(self, interval=100, timeout=self.update_meter)
+        self.meter_timer.start()
         self.refresh_static()
         self.refresh()
 
@@ -436,7 +508,8 @@ class Window(QWidget):
         self.cfg.update(whisper_model=self.model.currentData(), send_enter=self.enter.isChecked(),
                         opencode_whisper_model=self.oc_model.currentData(),
                         opencode_enter=self.oc_enter.isChecked(),
-                        tts=self.tts.isChecked(), gain=self.gain.value())
+                        tts=self.tts.isChecked(), gain=self.gain.value(),
+                        source=self.source.currentData() or "")
         save_config(self.cfg)
         self.refresh_static()
         if self.cfg["gain"] != before["gain"]:
@@ -447,7 +520,7 @@ class Window(QWidget):
     @staticmethod
     def engine_settings(cfg):
         """What the running engine was started with: only these need a restart (an inactive tab's don't)."""
-        keys = ["backend", "tts"] + list(WHISPER_KEYS.get(cfg["backend"], ()))
+        keys = ["backend", "tts", "source"] + list(WHISPER_KEYS.get(cfg["backend"], ()))
         return {k: cfg[k] for k in keys}
 
     def restart(self):
@@ -541,6 +614,24 @@ class Window(QWidget):
         self.tts_wired.setText(", ".join(wired) or "nothing — replies aren't read aloud")
         mic = usb_mic()
         self.mic.setText(mic or "no TX-26 or USB sound card found — plug one in and restart")
+        self.populate_sources()
+
+    def populate_sources(self):
+        """List the recordable inputs, keeping the saved choice selected (and shown even if unplugged).
+        Only rebuilt when the set of inputs changes, so it doesn't fight the user mid-selection."""
+        items = [("Auto — TX-26, else the USB sound card", "")]
+        items += [(desc, name) for desc, name in list_sources()]
+        chosen = self.cfg["source"]
+        if chosen and chosen not in [name for _, name in items]:
+            items.append((f"{chosen}  (not connected)", chosen))
+        if items == [(self.source.itemText(i), self.source.itemData(i)) for i in range(self.source.count())]:
+            return
+        self.source.blockSignals(True)
+        self.source.clear()
+        for desc, name in items:
+            self.source.addItem(desc, name)
+        self.source.setCurrentIndex(max(0, self.source.findData(chosen)))
+        self.source.blockSignals(False)
 
     def sync_claude(self):
         """Show Claude Code's voice settings as they are now: /voice in Claude changes them too."""
@@ -558,6 +649,16 @@ class Window(QWidget):
             "Tap mode always sends prompts of three words or more." if tap else
             "Only prompts of three words or more: shorter ones wait for Enter (Claude Code's limit).")
         self.claude_form.setRowVisible(self.voice_off, not voice.get("enabled"))   # no gap when hidden
+
+    def update_meter(self):
+        """Read ptt.py's level file; a reading older than 1.5 s means it's not recording."""
+        try:
+            if time.time() - LEVEL.stat().st_mtime > 1.5:
+                raise ValueError
+            db, floor = LEVEL.read_text().split()
+            self.meter.show_level(float(db), float(floor))
+        except (OSError, ValueError):
+            self.meter.show_level(None, None)
 
     def refresh(self):
         if mtime(CLAUDE_SETTINGS) != self.claude_mtime:
