@@ -404,6 +404,8 @@ class Window(QWidget):
         self.gain.setSuffix("   (35 clips speech)")
         self.gain.valueChanged.connect(lambda *_: self.changed())
         form.addRow("Gain:", self.gain)
+        self.gain_note = note("")
+        form.addRow("", self.gain_note)
         root.addWidget(box)
 
         # activity
@@ -421,6 +423,8 @@ class Window(QWidget):
         self.timer.start()
         self.meter_timer = QTimer(self, interval=100, timeout=self.update_meter)
         self.meter_timer.start()
+        self.inputs_timer = QTimer(self, interval=2000, timeout=self.refresh_inputs)
+        self.inputs_timer.start()
         self.refresh_static()
         self.refresh()
 
@@ -612,9 +616,25 @@ class Window(QWidget):
             self.hook_state.setText("not read aloud")
             self.hook_btn.setText("Read replies aloud")
         self.tts_wired.setText(", ".join(wired) or "nothing — replies aren't read aloud")
+        self.refresh_inputs()
+
+    def refresh_inputs(self):
+        """The input label and the Source list, refreshed on a timer too so a mic plugged in or
+        unplugged while the window is open is picked up without a restart."""
         mic = usb_mic()
         self.mic.setText(mic or "no TX-26 or USB sound card found — plug one in and restart")
         self.populate_sources()
+        self.update_gain_enabled()
+
+    def update_gain_enabled(self):
+        """Gain sets the C-Media sound card's mic volume, so it only bites when that card is the one in
+        use. Grey it out for other mics (a Yeti, a display, the TX-26), which use their own gain."""
+        src = self.source.currentData() or ""
+        micfx = "C-Media" in src if src else (usb_card() is not None and not tx26_port())
+        self.gain.setEnabled(micfx)
+        self.gain_note.setText("" if micfx else "Only the MicFX's USB sound card has this control — "
+                                                "other mics use their own gain.")
+        self.gain_note.setVisible(not micfx)
 
     def populate_sources(self):
         """List the recordable inputs, keeping the saved choice selected (and shown even if unplugged).

@@ -187,12 +187,21 @@ def usb_source(match):
 
 
 def usb_card():
-    """ALSA card number of the USB sound card, or None."""
+    """ALSA card number of the C-Media USB sound card (the MicFX), or None. Matched by name, not just
+    the first USB-Audio card: another USB mic (a Yeti, a display) can enumerate ahead of it, and only
+    the C-Media card carries the 'Auto Gain Control' / 'Mic Capture Volume' that setup_mixer sets."""
     try:
-        cards = Path("/proc/asound/cards").read_text().splitlines()
+        lines = Path("/proc/asound/cards").read_text().splitlines()
     except OSError:
         return None
-    return next((l.split()[0] for l in cards if l.strip() and l.split()[0].isdigit() and "USB-Audio" in l), None)
+    card = None
+    for l in lines:                             # a card spans two lines; "C-Media" is on the second
+        head = l.split()
+        if head and head[0].isdigit():
+            card = head[0]
+        if card and "C-Media" in l:
+            return card
+    return None
 
 
 def setup_mixer(card, gain):
