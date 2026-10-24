@@ -9,7 +9,7 @@ click when it is released. Audio is the only link (headset jack), so we listen f
 
   .venv/bin/python ptt.py                    # hold SPACE for Claude Code voice mode
   .venv/bin/python ptt.py --dry-run -v       # print events and levels, no key presses
-  .venv/bin/python ptt.py --file button.wav  # run the detector over a recording
+  .venv/bin/python ptt.py --file recording.wav  # run the detector over a recording
   .venv/bin/python ptt.py --key KEY_F13      # hold a different key
 """
 import argparse
